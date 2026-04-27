@@ -26,14 +26,27 @@ class TodoTree(Tree[int]):
 
     guide_depth = 4
     show_root = True
+    can_focus = True
 
     def render_label(self, node, base_style, style):
         node_label = node._label.copy()
         node_label.stylize(style)
         if node == self.cursor_node:
-            return Text.assemble(("● ", "bold"), node_label)
-        else:
-            return Text.assemble(("  ", base_style), node_label)
+            node_label.stylize("rgb(255,165,0)")
+            return Text.assemble(("● ", "rgb(255,165,0)"), node_label)
+        return node_label
+
+    def _on_click(self, event) -> None:
+        event.prevent_default()
+        event.stop()
+
+    def _on_mouse_down(self, event) -> None:
+        event.prevent_default()
+        event.stop()
+
+    def _on_mouse_move(self, event) -> None:
+        event.prevent_default()
+        event.stop()
 
 
 def _render_label(todo: Todo, is_leaf: bool = True) -> Text:
@@ -119,9 +132,14 @@ class ConfirmScreen(ModalScreen[bool]):
 
 
 class TodoApp(App):
+    ENABLE_COMMAND_PALETTE = False
+
     CSS = """
     Screen {
         layout: vertical;
+    }
+    * {
+        scrollbar-size: 0 0;
     }
     TodoTree {
         height: 1fr;
@@ -132,6 +150,10 @@ class TodoApp(App):
         text-style: none;
     }
     TodoTree > .tree--highlight {
+        background: transparent;
+        text-style: none;
+    }
+    TodoTree:hover {
         background: transparent;
     }
     #status-bar {
@@ -166,7 +188,8 @@ class TodoApp(App):
         Binding("j", "cursor_down", "Down", show=False, priority=True),
         Binding("g", "press_g", show=False, priority=True),
         Binding("G", "goto_bottom", "Bottom", show=False, priority=True),
-        Binding("a", "add_root", "Add"),
+        Binding("a", "add_sibling", "Add"),
+        Binding("A", "add_root", "Add Root"),
         Binding("tab", "add_child", "Sub-task", priority=True),
         Binding("d", "delete_todo", "Delete"),
         Binding("e", "edit_todo", "Edit"),
@@ -184,16 +207,10 @@ class TodoApp(App):
 
     _UI_STATE_PATH = os.path.expanduser("~/.todo_ui_state.pkl")
     _THEMES = [
-        "textual-dark",
-        "textual-light",
-        "nord",
         "gruvbox",
-        "catppuccin-mocha",
-        "catppuccin-latte",
         "dracula",
-        "tokyo-night",
-        "solarized-light",
-        "solarized-dark",
+        "textual-dark",
+        "nord",
     ]
 
     def __init__(self, store: TodoStore) -> None:
@@ -331,9 +348,11 @@ class TodoApp(App):
             while parent is not None:
                 parent.expand()
                 parent = parent.parent
+            tree.root.expand()
             tree.select_node(node)
-
-        tree.root.expand()
+            self.call_after_refresh(tree.scroll_to_node, node)
+        else:
+            tree.root.expand()
 
     @staticmethod
     def _collect_expanded(node: TreeNode[int], expanded_ids: set[int]) -> None:
@@ -442,11 +461,49 @@ class TodoApp(App):
         for child in node.children:
             TodoApp._expand_recursive(child)
 
+    def action_add_sibling(self) -> None:
+        todo_id = self._get_selected_todo_id()
+        if todo_id is None:
+            self.action_add_root()
+            return
+        todo = self.store.get(todo_id)
+        if not todo:
+            self.action_add_root()
+            return
+        parent_id = todo.parent
+
+        def on_input(text: str) -> None:
+            if text:
+                def do_add():
+                    new_todo = self.store.add(text, parent_id=parent_id)
+                    tree = self.query_one(TodoTree)
+                    cursor = tree.cursor_node
+                    if cursor is not None and parent_id is not None:
+                        parent_node = cursor.parent
+                        if parent_node is not None:
+                            label = _render_label(new_todo, is_leaf=True)
+                            parent_node.add_leaf(label, data=new_todo.id)
+                            parent_node.expand()
+                    else:
+                        label = _render_label(new_todo, is_leaf=True)
+                        tree.root.add_leaf(label, data=new_todo.id)
+                        tree.root.expand()
+                self.set_timer(0.3, do_add)
+
+        if parent_id:
+            parent = self.store.get(parent_id)
+            prompt = f"Sibling of #{todo_id}" + (f" (under {parent.text[:20]})" if parent else "")
+        else:
+            prompt = "New root todo"
+        self.push_screen(InputScreen(prompt), callback=on_input)
+
     def action_add_root(self) -> None:
         def on_input(text: str) -> None:
             if text:
-                todo = self.store.add(text)
-                self._refresh_tree(select_id=todo.id)
+                def do_add():
+                    todo = self.store.add(text)
+                    self._refresh_tree(select_id=todo.id)
+                self.set_timer(0.3, do_add)
 
         self.push_screen(InputScreen("New root todo"), callback=on_input)
 
@@ -458,18 +515,20 @@ class TodoApp(App):
 
         def on_input(text: str) -> None:
             if text:
-                new_todo = self.store.add(text, parent_id=todo_id)
-                # 直接在当前节点下插入，不重建整棵树
-                tree = self.query_one(TodoTree)
-                node = tree.cursor_node
-                if node is not None:
-                    label = _render_label(new_todo)
-                    node.add_leaf(label, data=new_todo.id)
-                    node.expand()
-                    # 更新父节点标签（可能从叶子变成了分支）
-                    parent_todo = self.store.get(todo_id)
-                    if parent_todo:
-                        node.set_label(_render_label(parent_todo))
+                def do_add():
+                    new_todo = self.store.add(text, parent_id=todo_id)
+                    # 直接在当前节点下插入，不重建整棵树
+                    tree = self.query_one(TodoTree)
+                    node = tree.cursor_node
+                    if node is not None:
+                        label = _render_label(new_todo)
+                        node.add_leaf(label, data=new_todo.id)
+                        node.expand()
+                        # 更新父节点标签（可能从叶子变成了分支）
+                        parent_todo = self.store.get(todo_id)
+                        if parent_todo:
+                            node.set_label(_render_label(parent_todo))
+                self.set_timer(0.3, do_add)
 
         todo = self.store.get(todo_id)
         prompt = f"Sub-task of #{todo_id}" + (f" ({todo.text[:20]})" if todo else "")
@@ -505,8 +564,10 @@ class TodoApp(App):
 
         def on_confirm(confirmed: bool) -> None:
             if confirmed:
-                self.store.delete(todo_id)
-                self._refresh_tree()
+                def do_delete():
+                    self.store.delete(todo_id)
+                    self._refresh_tree()
+                self.set_timer(0.3, do_delete)
 
         self.push_screen(ConfirmScreen(msg), callback=on_confirm)
 
@@ -523,6 +584,7 @@ class TodoApp(App):
         self.theme = self._THEMES[(idx + 1) % len(self._THEMES)]
         self._update_header()
         self._save_ui_state()
+        self.notify(f"Theme: {self.theme}")
 
     def action_toggle_stale(self) -> None:
         self._hide_stale = not self._hide_stale
