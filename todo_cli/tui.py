@@ -1,21 +1,19 @@
 from __future__ import annotations
 
+import json
 import os
-import pickle
-from datetime import datetime, timedelta
 
 from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from .models import Todo
 from .store import TodoStore
-from .tree import build_children_map, format_time
+from .tree import build_children_map, filter_todos, format_time
 
 
 # ── helpers ──
@@ -29,13 +27,14 @@ class TodoTree(Tree[int]):
     can_focus = True
 
     def render_label(self, node, base_style, style):
-        node_label = node._label.copy()
+        node_label = node.label.copy()
         node_label.stylize(style)
         if node == self.cursor_node:
             node_label.stylize("rgb(255,165,0)")
             return Text.assemble(("● ", "rgb(255,165,0)"), node_label)
         return node_label
 
+    # 屏蔽鼠标事件，仅支持键盘交互
     def _on_click(self, event) -> None:
         event.prevent_default()
         event.stop()
@@ -205,7 +204,7 @@ class TodoApp(App):
         Binding("q", "quit", "Quit"),
     ]
 
-    _UI_STATE_PATH = os.path.expanduser("~/.todo_ui_state.pkl")
+    _UI_STATE_PATH = os.path.expanduser("~/.todo_ui_state.json")
     _THEMES = [
         "gruvbox",
         "dracula",
@@ -245,13 +244,32 @@ class TodoApp(App):
 
     def _load_ui_state(self) -> dict:
         try:
-            with open(self._UI_STATE_PATH, "rb") as f:
+            with open(self._UI_STATE_PATH, "r") as f:
+                data = json.load(f)
+            return {
+                "expanded": set(data.get("expanded", [])),
+                "theme": data.get("theme", self._THEMES[0]),
+            }
+        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+            # 兼容旧 pickle 格式，尝试读取后迁移
+            return self._migrate_pickle_state()
+
+    def _migrate_pickle_state(self) -> dict:
+        pickle_path = os.path.expanduser("~/.todo_ui_state.pkl")
+        try:
+            import pickle
+            with open(pickle_path, "rb") as f:
                 data = pickle.load(f)
-            # 兼容旧格式（set）
+            result: dict = {"expanded": set(), "theme": self._THEMES[0]}
             if isinstance(data, set):
-                return {"expanded": data, "theme": self._THEMES[0]}
-            return data
-        except (FileNotFoundError, EOFError, pickle.UnpicklingError):
+                result["expanded"] = data
+            elif isinstance(data, dict):
+                result["expanded"] = data.get("expanded", set())
+                result["theme"] = data.get("theme", self._THEMES[0])
+            # 迁移完成后删除旧文件
+            os.remove(pickle_path)
+            return result
+        except (FileNotFoundError, Exception):
             return {"expanded": set(), "theme": self._THEMES[0]}
 
     def _save_ui_state(self) -> None:
@@ -259,9 +277,9 @@ class TodoApp(App):
         expanded_ids: set[int] = set()
         for node in tree.root.children:
             self._collect_expanded(node, expanded_ids)
-        state = {"expanded": expanded_ids, "theme": self.theme}
-        with open(self._UI_STATE_PATH, "wb") as f:
-            pickle.dump(state, f)
+        state = {"expanded": sorted(expanded_ids), "theme": self.theme}
+        with open(self._UI_STATE_PATH, "w") as f:
+            json.dump(state, f)
 
     def action_quit(self) -> None:
         self._save_ui_state()
@@ -283,41 +301,7 @@ class TodoApp(App):
 
         filter_done = self._filter_values[self._filter_mode]
         todos = self.store.list_active()
-
-        # filter by root done status
-        if filter_done is not None:
-            children_map = build_children_map(todos)
-            root_ids = {t.id for t in children_map.get(None, []) if t.done == filter_done}
-            keep_ids: set[int] = set()
-
-            def collect_ids(tid: int) -> None:
-                keep_ids.add(tid)
-                for child in children_map.get(tid, []):
-                    collect_ids(child.id)
-
-            for rid in root_ids:
-                collect_ids(rid)
-            todos = [t for t in todos if t.id in keep_ids]
-
-        # hide stale: done root todos completed over 2 days ago
-        if self._hide_stale:
-            cutoff = (datetime.now() - timedelta(days=2)).isoformat()
-            children_map = build_children_map(todos)
-            stale_root_ids = {
-                t.id for t in children_map.get(None, [])
-                if t.done and t.done_at and t.done_at < cutoff
-            }
-            if stale_root_ids:
-                remove_ids: set[int] = set()
-
-                def collect_stale(tid: int) -> None:
-                    remove_ids.add(tid)
-                    for child in children_map.get(tid, []):
-                        collect_stale(child.id)
-
-                for rid in stale_root_ids:
-                    collect_stale(rid)
-                todos = [t for t in todos if t.id not in remove_ids]
+        todos = filter_todos(todos, filter_done=filter_done, hide_stale=self._hide_stale)
 
         children_map = build_children_map(todos)
         count = len(todos)
@@ -343,7 +327,6 @@ class TodoApp(App):
         # restore cursor
         if select_id and select_id in node_map:
             node = node_map[select_id]
-            # 确保祖先链展开，否则 select_node 无效
             parent = node.parent
             while parent is not None:
                 parent.expand()
@@ -362,7 +345,7 @@ class TodoApp(App):
             TodoApp._collect_expanded(child, expanded_ids)
 
     def _update_labels(self) -> None:
-        """就地更新所有节点标签，不重建树，光标位置不变。"""
+        """就地更新所有节点标签，不重建树，光标位置不变。仅用于 edit 场景。"""
         tree = self.query_one(TodoTree)
         todos = {t.id: t for t in self.store.list_active()}
 
@@ -373,8 +356,6 @@ class TodoApp(App):
                 walk(child)
 
         walk(tree.root)
-        # 更新标题计数
-        filter_done = self._filter_values[self._filter_mode]
         suffix = f" {self._filter_labels[self._filter_mode].lower()}" if self._filter_mode else ""
         count = len(todos)
         tree.root.set_label(f"[bold cyan]TODO[/bold cyan] ({count} items{suffix})")
@@ -418,10 +399,9 @@ class TodoApp(App):
         if todo_id is None:
             return
         if self.store.has_children(todo_id):
-            return  # 父节点不可 toggle，用 h/l 折叠展开
+            return
         self.store.toggle(todo_id)
-        # 只更新受影响节点的标签，不重建整棵树
-        self._update_labels()
+        self._refresh_tree(select_id=todo_id)
 
     def action_collapse_node(self) -> None:
         tree = self.query_one(TodoTree)
@@ -433,11 +413,10 @@ class TodoApp(App):
         tree = self.query_one(TodoTree)
         node = tree.cursor_node
         if node and not node.is_expanded:
-            node.expand()  # 只展开当前一层，子节点保持原状
+            node.expand()
 
     def action_toggle_all(self) -> None:
         tree = self.query_one(TodoTree)
-        # 检查是否有任何节点展开，有则全部收起，否则全部展开
         has_expanded = any(
             node.is_expanded
             for node in tree.root.children
@@ -474,21 +453,8 @@ class TodoApp(App):
 
         def on_input(text: str) -> None:
             if text:
-                def do_add():
-                    new_todo = self.store.add(text, parent_id=parent_id)
-                    tree = self.query_one(TodoTree)
-                    cursor = tree.cursor_node
-                    if cursor is not None and parent_id is not None:
-                        parent_node = cursor.parent
-                        if parent_node is not None:
-                            label = _render_label(new_todo, is_leaf=True)
-                            parent_node.add_leaf(label, data=new_todo.id)
-                            parent_node.expand()
-                    else:
-                        label = _render_label(new_todo, is_leaf=True)
-                        tree.root.add_leaf(label, data=new_todo.id)
-                        tree.root.expand()
-                self.set_timer(0.3, do_add)
+                new_todo = self.store.add(text, parent_id=parent_id)
+                self._refresh_tree(select_id=new_todo.id)
 
         if parent_id:
             parent = self.store.get(parent_id)
@@ -500,10 +466,8 @@ class TodoApp(App):
     def action_add_root(self) -> None:
         def on_input(text: str) -> None:
             if text:
-                def do_add():
-                    todo = self.store.add(text)
-                    self._refresh_tree(select_id=todo.id)
-                self.set_timer(0.3, do_add)
+                todo = self.store.add(text)
+                self._refresh_tree(select_id=todo.id)
 
         self.push_screen(InputScreen("New root todo"), callback=on_input)
 
@@ -515,20 +479,8 @@ class TodoApp(App):
 
         def on_input(text: str) -> None:
             if text:
-                def do_add():
-                    new_todo = self.store.add(text, parent_id=todo_id)
-                    # 直接在当前节点下插入，不重建整棵树
-                    tree = self.query_one(TodoTree)
-                    node = tree.cursor_node
-                    if node is not None:
-                        label = _render_label(new_todo)
-                        node.add_leaf(label, data=new_todo.id)
-                        node.expand()
-                        # 更新父节点标签（可能从叶子变成了分支）
-                        parent_todo = self.store.get(todo_id)
-                        if parent_todo:
-                            node.set_label(_render_label(parent_todo))
-                self.set_timer(0.3, do_add)
+                self.store.add(text, parent_id=todo_id)
+                self._refresh_tree(select_id=todo_id)
 
         todo = self.store.get(todo_id)
         prompt = f"Sub-task of #{todo_id}" + (f" ({todo.text[:20]})" if todo else "")
@@ -564,10 +516,8 @@ class TodoApp(App):
 
         def on_confirm(confirmed: bool) -> None:
             if confirmed:
-                def do_delete():
-                    self.store.delete(todo_id)
-                    self._refresh_tree()
-                self.set_timer(0.3, do_delete)
+                self.store.delete(todo_id)
+                self._refresh_tree()
 
         self.push_screen(ConfirmScreen(msg), callback=on_confirm)
 

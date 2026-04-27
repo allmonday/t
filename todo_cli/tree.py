@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .models import FlatRow, Todo
 
@@ -18,6 +17,17 @@ def get_roots(todos: list[Todo]) -> list[Todo]:
     return [t for t in todos if t.parent is None]
 
 
+def _collect_subtree(children_map: dict[int | None, list[Todo]], root: Todo) -> list[Todo]:
+    """收集以 root 为根的整棵子树。"""
+    result: list[Todo] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        result.append(node)
+        stack.extend(children_map.get(node.id, []))
+    return result
+
+
 def filter_by_roots(todos: list[Todo], filter_done: bool | None) -> list[Todo]:
     """按根任务 done 状态过滤，返回匹配的根及其所有子孙。"""
     if filter_done is None:
@@ -25,15 +35,49 @@ def filter_by_roots(todos: list[Todo], filter_done: bool | None) -> list[Todo]:
     children_map = build_children_map(todos)
     roots = [t for t in children_map.get(None, []) if t.done == filter_done]
     result: list[Todo] = []
-
-    def collect(node: Todo) -> None:
-        result.append(node)
-        for child in children_map.get(node.id, []):
-            collect(child)
-
     for root in roots:
-        collect(root)
+        result.extend(_collect_subtree(children_map, root))
     return result
+
+
+def filter_todos(
+    todos: list[Todo],
+    filter_done: bool | None = None,
+    hide_stale: bool = False,
+    stale_days: int = 2,
+) -> list[Todo]:
+    """统一过滤：按根任务 done 状态 + stale 隐藏。返回过滤后的 todo 列表。"""
+    children_map = build_children_map(todos)
+
+    keep_ids: set[int] | None = None
+
+    # 按 done 状态过滤
+    if filter_done is not None:
+        matched_roots = {t.id for t in children_map.get(None, []) if t.done == filter_done}
+        keep_ids = set()
+        for rid in matched_roots:
+            for node in _collect_subtree(children_map, next(t for t in todos if t.id == rid)):
+                keep_ids.add(node.id)
+
+    # 按 stale 过滤
+    if hide_stale:
+        cutoff = (datetime.now() - timedelta(days=stale_days)).isoformat()
+        stale_root_ids = {
+            t.id for t in children_map.get(None, [])
+            if t.done and t.done_at and t.done_at < cutoff
+        }
+        remove_ids: set[int] = set()
+        for rid in stale_root_ids:
+            for node in _collect_subtree(children_map, next(t for t in todos if t.id == rid)):
+                remove_ids.add(node.id)
+        if keep_ids is not None:
+            keep_ids -= remove_ids
+        else:
+            keep_ids = {t.id for t in todos} - remove_ids
+
+    if keep_ids is not None:
+        return [t for t in todos if t.id in keep_ids]
+    return todos
 
 
 def flatten_tree(todos: list[Todo], collapsed: set[int] | None = None) -> list[FlatRow]:
@@ -76,28 +120,8 @@ def flatten_tree(todos: list[Todo], collapsed: set[int] | None = None) -> list[F
     return rows
 
 
-def display_width(s: str) -> int:
-    """计算字符串在终端中的显示宽度（CJK 字符占 2 列）。"""
-    w = 0
-    for ch in s:
-        eaw = unicodedata.east_asian_width(ch)
-        w += 2 if eaw in ("F", "W") else 1
-    return w
-
-
-def truncate_to_width(s: str, max_width: int) -> str:
-    """截断字符串到指定的终端显示宽度。"""
-    w = 0
-    for i, ch in enumerate(s):
-        cw = 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
-        if w + cw > max_width:
-            return s[:i] + "…"
-        w += cw
-    return s
-
-
 def format_time(iso_str: str) -> str:
-    """ISO 8601 → 'today' / 'yesterday' / 'MM/DD'"""
+    """ISO 8601 → 'today' / 'yesterday' / 'MM/DD' / 'YYYY/MM/DD'"""
     try:
         dt = datetime.fromisoformat(iso_str)
         today = datetime.now().date()
@@ -106,7 +130,9 @@ def format_time(iso_str: str) -> str:
             return "today"
         elif delta == 1:
             return "yesterday"
-        else:
+        elif dt.year == today.year:
             return dt.strftime("%m/%d")
+        else:
+            return dt.strftime("%Y/%m/%d")
     except (ValueError, TypeError):
         return ""

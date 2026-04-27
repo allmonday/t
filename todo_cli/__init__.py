@@ -15,6 +15,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    from .cli import CliError
     from .store import TodoStore
 
     store = TodoStore()
@@ -34,5 +35,9 @@ def main() -> None:
         else:
             from .tui import run_tui
             run_tui(store)
+    except CliError as e:
+        from .cli import console
+        console.print(f"[red]{e}[/red]")
+        sys.exit(e.exit_code)
     finally:
         store.close()

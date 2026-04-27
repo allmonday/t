@@ -11,6 +11,13 @@ from .tree import build_children_map, filter_by_roots, format_time
 console = Console()
 
 
+class CliError(Exception):
+    """CLI 操作错误，携带退出码。"""
+    def __init__(self, message: str, exit_code: int = 1) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
 def _render_node(todo: Todo) -> Text:
     mark = "[✓]" if todo.done else "[ ]"
     time = format_time(todo.created)
@@ -57,13 +64,11 @@ def cli_list(store: TodoStore, filter_done: bool | None = None) -> None:
 
 def cli_add(store: TodoStore, text: str, parent_id: int | None = None) -> None:
     if not text.strip():
-        console.print("[red]Task text cannot be empty.[/red]")
-        raise SystemExit(1)
+        raise CliError("Task text cannot be empty.")
     try:
         todo = store.add(text.strip(), parent_id)
     except ValueError as e:
-        console.print(f"[red]{e}[/red]")
-        raise SystemExit(1)
+        raise CliError(str(e))
     parent_info = f" (under #{parent_id})" if parent_id else ""
     console.print(f"[green]Added[/green] [cyan]#{todo.id}[/cyan]: {todo.text}{parent_info}")
 
@@ -71,11 +76,9 @@ def cli_add(store: TodoStore, text: str, parent_id: int | None = None) -> None:
 def cli_toggle(store: TodoStore, todo_id: int) -> None:
     todo = store.get(todo_id)
     if not todo:
-        console.print(f"[red]Todo #{todo_id} not found.[/red]")
-        raise SystemExit(1)
+        raise CliError(f"Todo #{todo_id} not found.")
     if store.has_children(todo_id):
-        console.print(f"[red]#{todo_id} has subtasks — complete them instead.[/red]")
-        raise SystemExit(1)
+        raise CliError(f"#{todo_id} has subtasks — complete them instead.")
     store.toggle(todo_id)
     updated = store.get(todo_id)
     if updated and updated.done:
