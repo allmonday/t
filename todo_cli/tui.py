@@ -30,7 +30,10 @@ class TodoTree(Tree[int]):
     def render_label(self, node, base_style, style):
         node_label = node._label.copy()
         node_label.stylize(style)
-        return node_label
+        if node == self.cursor_node:
+            return Text.assemble(("● ", "bold"), node_label)
+        else:
+            return Text.assemble(("  ", base_style), node_label)
 
 
 def _render_label(todo: Todo, is_leaf: bool = True) -> Text:
@@ -123,6 +126,13 @@ class TodoApp(App):
     TodoTree {
         height: 1fr;
         margin: 0 0 0 1;
+    }
+    TodoTree > .tree--cursor {
+        background: transparent;
+        text-style: none;
+    }
+    TodoTree > .tree--highlight {
+        background: transparent;
     }
     #status-bar {
         dock: bottom;
