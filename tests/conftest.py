@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from todo_cli.models import Todo
+from todo_cli.models import TodoEntity
 
 # 相对于当前时间，避免跨年问题
 _NOW = datetime.now()
@@ -22,16 +22,16 @@ def _make_todo(
     created: str = TODAY_ISO,
     done_at: str | None = None,
     deleted_at: str | None = None,
-) -> Todo:
-    return Todo(id=id, text=text, done=done, parent=parent,
-                created=created, done_at=done_at, deleted_at=deleted_at)
+) -> TodoEntity:
+    return TodoEntity(id=id, text=text, done=done, parent=parent,
+                      created=created, done_at=done_at, deleted_at=deleted_at)
 
 
 # ── tree.py fixtures ──
 
 
 @pytest.fixture
-def sample_todos() -> list[Todo]:
+def sample_todos() -> list[TodoEntity]:
     """
     #1 根A (undone)
       #4 A1 (undone)
@@ -57,7 +57,7 @@ def sample_todos() -> list[Todo]:
 
 
 @pytest.fixture
-def stale_todos() -> list[Todo]:
+def stale_todos() -> list[TodoEntity]:
     """含过期完成根节点，用于 stale 过滤测试。done_at 基于 datetime.now() 动态计算。"""
     return [
         _make_todo(1, "新鲜完成", True, None, done_at=YESTERDAY_ISO),
@@ -68,12 +68,12 @@ def stale_todos() -> list[Todo]:
 
 
 @pytest.fixture
-def empty_todos() -> list[Todo]:
+def empty_todos() -> list[TodoEntity]:
     return []
 
 
 @pytest.fixture
-def single_todo() -> list[Todo]:
+def single_todo() -> list[TodoEntity]:
     return [_make_todo(1, "唯一任务", False, None)]
 
 
@@ -81,13 +81,18 @@ def single_todo() -> list[Todo]:
 
 
 @pytest.fixture
-def store():
+async def store():
     """已连接、使用 :memory: 的 TodoStore，清空种子数据。"""
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+
+    from todo_cli.models import Base
     from todo_cli.store import TodoStore
 
-    s = TodoStore(":memory:")
-    s.connect()
-    s._require_conn().execute("DELETE FROM audit")
-    s._require_conn().execute("DELETE FROM todos")
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    s = TodoStore(session_factory)
     yield s
-    s.close()
+    await engine.dispose()

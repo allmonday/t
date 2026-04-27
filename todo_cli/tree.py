@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from .models import FlatRow, Todo
+from .models import FlatRow, TodoEntity as Todo
 
 
 def build_children_map(todos: list[Todo]) -> dict[int | None, list[Todo]]:

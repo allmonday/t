@@ -11,7 +11,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
-from .models import Todo
+from .models import TodoEntity
 from .store import TodoStore
 from .tree import build_children_map, filter_todos, format_time
 
@@ -48,7 +48,7 @@ class TodoTree(Tree[int]):
         event.stop()
 
 
-def _render_label(todo: Todo, is_leaf: bool = True) -> Text:
+def _render_label(todo: TodoEntity, is_leaf: bool = True) -> Text:
     time = format_time(todo.created)
     text = Text()
     if todo.done:
@@ -212,9 +212,10 @@ class TodoApp(App):
         "nord",
     ]
 
-    def __init__(self, store: TodoStore) -> None:
+    def __init__(self, store: TodoStore, engine=None) -> None:
         super().__init__()
         self.store = store
+        self._engine = engine
         self._filter_mode: int = 0  # 0=All, 1=Pending, 2=Done
         self._filter_labels = ["All", "Pending", "Done"]
         self._filter_values: list[bool | None] = [None, False, True]
@@ -230,10 +231,10 @@ class TodoApp(App):
         yield Static("", id="status-bar")
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self.theme = self._saved_theme
         self._update_header()
-        self._refresh_tree(force_expand=self._saved_expanded)
+        await self._refresh_tree(force_expand=self._saved_expanded)
 
     def _update_header(self) -> None:
         self.title = "TODO"
@@ -251,7 +252,6 @@ class TodoApp(App):
                 "theme": data.get("theme", self._THEMES[0]),
             }
         except (FileNotFoundError, json.JSONDecodeError, TypeError):
-            # 兼容旧 pickle 格式，尝试读取后迁移
             return self._migrate_pickle_state()
 
     def _migrate_pickle_state(self) -> dict:
@@ -266,7 +266,6 @@ class TodoApp(App):
             elif isinstance(data, dict):
                 result["expanded"] = data.get("expanded", set())
                 result["theme"] = data.get("theme", self._THEMES[0])
-            # 迁移完成后删除旧文件
             os.remove(pickle_path)
             return result
         except (FileNotFoundError, Exception):
@@ -287,7 +286,7 @@ class TodoApp(App):
 
     # ── tree building ──
 
-    def _refresh_tree(self, select_id: int | None = None, force_expand: set[int] | None = None) -> None:
+    async def _refresh_tree(self, select_id: int | None = None, force_expand: set[int] | None = None) -> None:
         tree = self.query_one(TodoTree)
 
         # 保存当前展开状态
@@ -300,7 +299,7 @@ class TodoApp(App):
         tree.clear()
 
         filter_done = self._filter_values[self._filter_mode]
-        todos = self.store.list_active()
+        todos = await self.store.list_active()
         todos = filter_todos(todos, filter_done=filter_done, hide_stale=self._hide_stale)
 
         children_map = build_children_map(todos)
@@ -333,7 +332,7 @@ class TodoApp(App):
                 parent = parent.parent
             tree.root.expand()
             tree.select_node(node)
-            self.call_after_refresh(tree.scroll_to_node, node)
+            tree.scroll_to_node(node)
         else:
             tree.root.expand()
 
@@ -344,10 +343,10 @@ class TodoApp(App):
         for child in node.children:
             TodoApp._collect_expanded(child, expanded_ids)
 
-    def _update_labels(self) -> None:
+    async def _update_labels(self) -> None:
         """就地更新所有节点标签，不重建树，光标位置不变。仅用于 edit 场景。"""
         tree = self.query_one(TodoTree)
-        todos = {t.id: t for t in self.store.list_active()}
+        todos = {t.id: t for t in await self.store.list_active()}
 
         def walk(node: TreeNode[int]) -> None:
             if node.data is not None and node.data in todos:
@@ -394,14 +393,14 @@ class TodoApp(App):
     def action_cursor_down(self) -> None:
         self.query_one(TodoTree).action_cursor_down()
 
-    def action_toggle_todo(self) -> None:
+    async def action_toggle_todo(self) -> None:
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             return
-        if self.store.has_children(todo_id):
+        if await self.store.has_children(todo_id):
             return
-        self.store.toggle(todo_id)
-        self._refresh_tree(select_id=todo_id)
+        await self.store.toggle(todo_id)
+        await self._refresh_tree(select_id=todo_id)
 
     def action_collapse_node(self) -> None:
         tree = self.query_one(TodoTree)
@@ -440,91 +439,92 @@ class TodoApp(App):
         for child in node.children:
             TodoApp._expand_recursive(child)
 
-    def action_add_sibling(self) -> None:
-        todo_id = self._get_selected_todo_id()
-        if todo_id is None:
-            self.action_add_root()
-            return
-        todo = self.store.get(todo_id)
+    async def _add_sibling(self, todo_id: int) -> None:
+        todo = await self.store.get(todo_id)
         if not todo:
-            self.action_add_root()
             return
         parent_id = todo.parent
 
-        def on_input(text: str) -> None:
-            if text:
-                new_todo = self.store.add(text, parent_id=parent_id)
-                self._refresh_tree(select_id=new_todo.id)
-
         if parent_id:
-            parent = self.store.get(parent_id)
+            parent = await self.store.get(parent_id)
             prompt = f"Sibling of #{todo_id}" + (f" (under {parent.text[:20]})" if parent else "")
         else:
             prompt = "New root todo"
-        self.push_screen(InputScreen(prompt), callback=on_input)
+        text = await self.push_screen_wait(InputScreen(prompt))
+        if text:
+            new_todo = await self.store.add(text, parent_id=parent_id)
+            await self._refresh_tree(select_id=new_todo.id)
 
-    def action_add_root(self) -> None:
-        def on_input(text: str) -> None:
-            if text:
-                todo = self.store.add(text)
-                self._refresh_tree(select_id=todo.id)
-
-        self.push_screen(InputScreen("New root todo"), callback=on_input)
-
-    def action_add_child(self) -> None:
+    async def action_add_sibling(self) -> None:
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
-            self.action_add_root()
-            return
+            self.run_worker(self._add_root())
+        else:
+            self.run_worker(self._add_sibling(todo_id))
 
-        def on_input(text: str) -> None:
-            if text:
-                self.store.add(text, parent_id=todo_id)
-                self._refresh_tree(select_id=todo_id)
+    async def _add_root(self) -> None:
+        text = await self.push_screen_wait(InputScreen("New root todo"))
+        if text:
+            todo = await self.store.add(text)
+            await self._refresh_tree(select_id=todo.id)
 
-        todo = self.store.get(todo_id)
+    async def action_add_root(self) -> None:
+        self.run_worker(self._add_root())
+
+    async def _add_child(self, todo_id: int) -> None:
+        todo = await self.store.get(todo_id)
         prompt = f"Sub-task of #{todo_id}" + (f" ({todo.text[:20]})" if todo else "")
-        self.push_screen(InputScreen(prompt), callback=on_input)
+        text = await self.push_screen_wait(InputScreen(prompt))
+        if text:
+            await self.store.add(text, parent_id=todo_id)
+            await self._refresh_tree(select_id=todo_id)
 
-    def action_edit_todo(self) -> None:
+    async def action_add_child(self) -> None:
+        todo_id = self._get_selected_todo_id()
+        if todo_id is None:
+            self.run_worker(self._add_root())
+        else:
+            self.run_worker(self._add_child(todo_id))
+
+    async def _edit_todo(self, todo_id: int) -> None:
+        todo = await self.store.get(todo_id)
+        if not todo:
+            return
+        text = await self.push_screen_wait(InputScreen(f"Edit #{todo_id}", default=todo.text))
+        if text and text != todo.text:
+            await self.store.update_text(todo_id, text)
+            await self._update_labels()
+
+    async def action_edit_todo(self) -> None:
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             return
-        todo = self.store.get(todo_id)
+        self.run_worker(self._edit_todo(todo_id))
+
+    async def _delete_todo(self, todo_id: int) -> None:
+        todo = await self.store.get(todo_id)
         if not todo:
             return
-
-        def on_edit(text: str) -> None:
-            if text and text != todo.text:
-                self.store.update_text(todo_id, text)
-                self._update_labels()
-
-        self.push_screen(InputScreen(f"Edit #{todo_id}", default=todo.text), callback=on_edit)
-
-    def action_delete_todo(self) -> None:
-        todo_id = self._get_selected_todo_id()
-        if todo_id is None:
-            return
-        todo = self.store.get(todo_id)
-        if not todo:
-            return
-        desc_count = len(self.store.get_descendants(todo_id))
+        desc_count = len(await self.store.get_descendants(todo_id))
         if desc_count > 0:
             msg = f'Delete "#{todo_id} {todo.text}" and {desc_count} subtask(s)? (y/n)'
         else:
             msg = f'Delete "#{todo_id} {todo.text}"? (y/n)'
+        confirmed = await self.push_screen_wait(ConfirmScreen(msg))
+        if confirmed:
+            await self.store.delete(todo_id)
+            await self._refresh_tree()
 
-        def on_confirm(confirmed: bool) -> None:
-            if confirmed:
-                self.store.delete(todo_id)
-                self._refresh_tree()
+    async def action_delete_todo(self) -> None:
+        todo_id = self._get_selected_todo_id()
+        if todo_id is None:
+            return
+        self.run_worker(self._delete_todo(todo_id))
 
-        self.push_screen(ConfirmScreen(msg), callback=on_confirm)
-
-    def action_cycle_filter(self) -> None:
+    async def action_cycle_filter(self) -> None:
         self._filter_mode = (self._filter_mode + 1) % 3
         self._update_header()
-        self._refresh_tree()
+        await self._refresh_tree()
 
     def action_toggle_theme(self) -> None:
         try:
@@ -536,12 +536,26 @@ class TodoApp(App):
         self._save_ui_state()
         self.notify(f"Theme: {self.theme}")
 
-    def action_toggle_stale(self) -> None:
+    async def action_toggle_stale(self) -> None:
         self._hide_stale = not self._hide_stale
         self._update_header()
-        self._refresh_tree()
+        await self._refresh_tree()
 
 
-def run_tui(store: TodoStore) -> None:
-    app = TodoApp(store)
+def run_tui() -> None:
+    """TUI 入口，Textual 自管理 event loop。"""
+    import asyncio
+
+    from .db import create_engine_and_session, init_db, seed_if_empty
+    from .store import TodoStore
+
+    async def setup():
+        engine, session_factory = create_engine_and_session()
+        await init_db(engine)
+        await seed_if_empty(session_factory)
+        return engine, session_factory
+
+    engine, session_factory = asyncio.run(setup())
+    store = TodoStore(session_factory)
+    app = TodoApp(store, engine)
     app.run()

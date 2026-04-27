@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 
 
@@ -15,29 +16,43 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    from .cli import CliError
-    from .store import TodoStore
+    if not args.text and not args.list and args.toggle is None:
+        # TUI 模式 — Textual 自管理 event loop
+        from .tui import run_tui
+        try:
+            run_tui()
+        except KeyboardInterrupt:
+            pass
+        return
 
-    store = TodoStore()
-    store.connect()
+    # CLI 模式 — 用 asyncio.run() 桥接
+    from .cli import CliError, console
+
+    async def async_main():
+        from .db import create_engine_and_session, init_db, seed_if_empty
+        from .store import TodoStore
+
+        engine, session_factory = create_engine_and_session()
+        await init_db(engine)
+        await seed_if_empty(session_factory)
+        store = TodoStore(session_factory)
+
+        try:
+            if args.text:
+                from .cli import cli_add
+                await cli_add(store, " ".join(args.text), args.parent)
+            elif args.list:
+                from .cli import cli_list
+                filter_done = True if args.done else (False if args.pending else None)
+                await cli_list(store, filter_done=filter_done)
+            elif args.toggle is not None:
+                from .cli import cli_toggle
+                await cli_toggle(store, args.toggle)
+        finally:
+            await engine.dispose()
 
     try:
-        if args.text:
-            from .cli import cli_add
-            cli_add(store, " ".join(args.text), args.parent)
-        elif args.list:
-            from .cli import cli_list
-            filter_done = True if args.done else (False if args.pending else None)
-            cli_list(store, filter_done=filter_done)
-        elif args.toggle is not None:
-            from .cli import cli_toggle
-            cli_toggle(store, args.toggle)
-        else:
-            from .tui import run_tui
-            run_tui(store)
+        asyncio.run(async_main())
     except CliError as e:
-        from .cli import console
         console.print(f"[red]{e}[/red]")
         sys.exit(e.exit_code)
-    finally:
-        store.close()

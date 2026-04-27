@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from todo_cli.models import Todo
+from todo_cli.models import TodoEntity as Todo
 from todo_cli.tree import (
     _collect_subtree,
     build_children_map,
