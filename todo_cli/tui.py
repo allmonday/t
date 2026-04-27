@@ -30,8 +30,9 @@ class TodoTree(Tree[int]):
         node_label = node.label.copy()
         node_label.stylize(style)
         if node == self.cursor_node:
-            node_label.stylize("rgb(255,165,0)")
-            return Text.assemble(("● ", "rgb(255,165,0)"), node_label)
+            if node_label.spans:
+                s = node_label.spans[0]
+                node_label.stylize("rgb(255,165,0) bold", s.start, s.end)
         return node_label
 
     # 屏蔽鼠标事件，仅支持键盘交互
@@ -51,13 +52,13 @@ class TodoTree(Tree[int]):
 def _render_label(todo: TodoEntity, is_leaf: bool = True) -> Text:
     time = format_time(todo.created)
     text = Text()
+    text.append(f"#{todo.id} ", style="dim")
     if todo.done:
         text.append(todo.text, style="strike dim")
-    elif not is_leaf:
-        text.append(todo.text, style="dim")
+    elif is_leaf:
+        text.append(todo.text, style="bold")
     else:
         text.append(todo.text)
-    text.append(f"  #{todo.id}", style="dim")
     text.append(f"  {time}", style="dim italic" if not todo.done else "strike dim")
     if todo.done_at:
         text.append(f"  done {format_time(todo.done_at)}", style="green dim italic")
@@ -331,8 +332,12 @@ class TodoApp(App):
                 parent.expand()
                 parent = parent.parent
             tree.root.expand()
-            tree.select_node(node)
-            tree.scroll_to_node(node)
+
+            def _restore_cursor(n=node):
+                tree.select_node(n)
+                tree.scroll_to_node(n)
+
+            self.call_after_refresh(_restore_cursor)
         else:
             tree.root.expand()
 
@@ -350,7 +355,8 @@ class TodoApp(App):
 
         def walk(node: TreeNode[int]) -> None:
             if node.data is not None and node.data in todos:
-                node.set_label(_render_label(todos[node.data]))
+                is_leaf = not bool(node.children)
+                node.set_label(_render_label(todos[node.data], is_leaf=is_leaf))
             for child in node.children:
                 walk(child)
 
