@@ -11,7 +11,6 @@ from textual.binding import Binding
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, Static, Tree
-from textual.widgets._tree import TOGGLE_STYLE
 from textual.widgets.tree import TreeNode
 
 from .models import Todo
@@ -25,26 +24,22 @@ from .tree import build_children_map, format_time
 class TodoTree(Tree[int]):
     """Tree subclass that aligns leaf nodes with expandable nodes."""
 
+    guide_depth = 4
+    show_root = True
+
     def render_label(self, node, base_style, style):
         node_label = node._label.copy()
         node_label.stylize(style)
-        if node._allow_expand:
-            prefix = (
-                self.ICON_NODE_EXPANDED if node.is_expanded else self.ICON_NODE,
-                base_style + TOGGLE_STYLE,
-            )
-        else:
-            prefix = ("  ", base_style)  # same width as ▶/▼ + space
-        return Text.assemble(prefix, node_label)
+        return node_label
 
 
-def _render_label(todo: Todo) -> Text:
-    mark = "[✓]" if todo.done else "[ ]"
+def _render_label(todo: Todo, is_leaf: bool = True) -> Text:
     time = format_time(todo.created)
     text = Text()
-    text.append(f"{mark} ", style="green" if todo.done else "dim")
     if todo.done:
         text.append(todo.text, style="strike dim")
+    elif not is_leaf:
+        text.append(todo.text, style="dim")
     else:
         text.append(todo.text)
     text.append(f"  #{todo.id}", style="dim")
@@ -127,6 +122,7 @@ class TodoApp(App):
     }
     TodoTree {
         height: 1fr;
+        margin: 0 0 0 1;
     }
     #status-bar {
         dock: bottom;
@@ -306,8 +302,8 @@ class TodoApp(App):
 
         def add_nodes(parent_node: TreeNode[int], parent_id: int | None) -> None:
             for todo in children_map.get(parent_id, []):
-                label = _render_label(todo)
                 has_children = todo.id in children_map
+                label = _render_label(todo, is_leaf=not has_children)
                 if has_children:
                     node = parent_node.add(label, data=todo.id, expand=(todo.id in expanded_ids))
                 else:
