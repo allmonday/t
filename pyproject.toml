@@ -1,0 +1,12 @@
+[project]
+name = "todo-cli"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["rich", "textual"]
+
+[project.scripts]
+t = "todo_cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
