@@ -373,12 +373,11 @@ class TodoApp(App):
         if self._g_pending:
             self._g_pending = False
             tree = self.query_one(TodoTree)
-            if tree.root.children:
-                tree.select_node(tree.root.children[0])
-                tree.scroll_home(animate=False)
+            tree.scroll_home(animate=False)
+            tree.move_cursor_to_line(0)
         else:
             self._g_pending = True
-            self.set_timer(0.5, self._reset_g)
+            self.set_timer(0.3, self._reset_g)
 
     def _reset_g(self) -> None:
         self._g_pending = False
