@@ -33,7 +33,13 @@ class TodoTree(Tree[int]):
             if node_label.spans:
                 s = node_label.spans[0]
                 node_label.stylize("rgb(255,165,0) bold", s.start, s.end)
-        return node_label
+            node_label.stylize("underline")
+        if node._allow_expand:
+            icon = self.ICON_NODE_EXPANDED if node.is_expanded else self.ICON_NODE
+            text = Text.assemble((icon, base_style), node_label)
+        else:
+            text = Text.assemble(("", base_style), node_label)
+        return text
 
     # 屏蔽鼠标事件，仅支持键盘交互
     def _on_click(self, event) -> None:
@@ -144,6 +150,7 @@ class TodoApp(App):
     TodoTree {
         height: 1fr;
         margin: 0 0 0 1;
+        background: transparent;
     }
     TodoTree > .tree--cursor {
         background: transparent;
@@ -153,8 +160,9 @@ class TodoApp(App):
         background: transparent;
         text-style: none;
     }
-    TodoTree:hover {
+    TodoTree > .tree--line:hover {
         background: transparent;
+        text-style: none;
     }
     #status-bar {
         dock: bottom;
@@ -406,7 +414,7 @@ class TodoApp(App):
         if await self.store.has_children(todo_id):
             return
         await self.store.toggle(todo_id)
-        await self._refresh_tree(select_id=todo_id)
+        await self._update_labels()
 
     def action_collapse_node(self) -> None:
         tree = self.query_one(TodoTree)
@@ -482,8 +490,8 @@ class TodoApp(App):
         prompt = f"Sub-task of #{todo_id}" + (f" ({todo.text[:20]})" if todo else "")
         text = await self.push_screen_wait(InputScreen(prompt))
         if text:
-            await self.store.add(text, parent_id=todo_id)
-            await self._refresh_tree(select_id=todo_id)
+            new_todo = await self.store.add(text, parent_id=todo_id)
+            await self._refresh_tree(select_id=new_todo.id)
 
     async def action_add_child(self) -> None:
         todo_id = self._get_selected_todo_id()
@@ -496,10 +504,13 @@ class TodoApp(App):
         todo = await self.store.get(todo_id)
         if not todo:
             return
-        text = await self.push_screen_wait(InputScreen(f"Edit #{todo_id}", default=todo.text))
-        if text and text != todo.text:
-            await self.store.update_text(todo_id, text)
-            await self._update_labels()
+        new_text = await self.push_screen_wait(InputScreen(f"Edit #{todo_id} text", default=todo.text))
+        if new_text and new_text != todo.text:
+            await self.store.update_text(todo_id, new_text)
+        new_desc = await self.push_screen_wait(InputScreen(f"Edit #{todo_id} desc", default=todo.desc or ""))
+        if new_desc and new_desc != (todo.desc or ""):
+            await self.store.update_desc(todo_id, new_desc)
+        await self._update_labels()
 
     async def action_edit_todo(self) -> None:
         todo_id = self._get_selected_todo_id()
@@ -518,8 +529,15 @@ class TodoApp(App):
             msg = f'Delete "#{todo_id} {todo.text}"? (y/n)'
         confirmed = await self.push_screen_wait(ConfirmScreen(msg))
         if confirmed:
+            parent_id = todo.parent
+            if parent_id:
+                siblings = await self.store.get_children(parent_id)
+            else:
+                siblings = [t for t in await self.store.list_active() if t.parent is None]
+            sibling_id = next((s.id for s in siblings if s.id != todo_id), None)
+            select_id = sibling_id or parent_id
             await self.store.delete(todo_id)
-            await self._refresh_tree()
+            await self._refresh_tree(select_id=select_id)
 
     async def action_delete_todo(self) -> None:
         todo_id = self._get_selected_todo_id()
