@@ -57,17 +57,22 @@ class TodoTree(Tree[int]):
 
 def _render_label(todo: TodoEntity, is_leaf: bool = True) -> Text:
     time = format_time(todo.created)
-    text = Text()
-    text.append(f"#{todo.id} ", style="dim")
     if todo.done:
-        text.append(todo.text, style="strike dim")
-    elif is_leaf:
-        text.append(todo.text, style="bold")
+        text = Text(style="dim")
+        text.append(f"#{todo.id} ")
+        text.append(todo.text, style="strike")
+        if time:
+            text.append(f"  {time}", style="italic")
+        if todo.done_at:
+            done_time = format_time(todo.done_at)
+            if done_time:
+                text.append(f"  {done_time}", style="green italic")
     else:
+        text = Text()
+        text.append(f"#{todo.id} ", style="dim")
         text.append(todo.text)
-    text.append(f"  {time}", style="dim italic" if not todo.done else "strike dim")
-    if todo.done_at:
-        text.append(f"  done {format_time(todo.done_at)}", style="green dim italic")
+        if time:
+            text.append(f"  {time}", style="dim italic")
     return text
 
 
@@ -202,9 +207,9 @@ class TodoApp(App):
         Binding("d", "delete_todo", "Delete"),
         Binding("e", "edit_todo", "Edit"),
         Binding("space", "toggle_todo", "Toggle", priority=True),
-        Binding("h", "collapse_node", "Collapse", priority=True),
+        Binding("h", "press_h", "Collapse", priority=True),
         Binding("left", "collapse_node", "Collapse", show=False, priority=True),
-        Binding("l", "expand_node", "Expand", priority=True),
+        Binding("l", "press_l", "Expand", priority=True),
         Binding("right", "expand_node", "Expand", show=False, priority=True),
         Binding("m", "toggle_all", "Fold/Unfold All", priority=True),
         Binding("f", "cycle_filter", "Filter"),
@@ -230,6 +235,8 @@ class TodoApp(App):
         self._filter_values: list[bool | None] = [None, False, True]
         self._hide_stale: bool = True
         self._g_pending: bool = False
+        self._l_pending: bool = False
+        self._h_pending: bool = False
         ui_state = self._load_ui_state()
         self._saved_expanded: set[int] = ui_state.get("expanded", set())
         self._saved_theme: str = ui_state.get("theme", self._THEMES[0])
@@ -412,6 +419,7 @@ class TodoApp(App):
         if todo_id is None:
             return
         if await self.store.has_children(todo_id):
+            self.notify("Has sub-tasks, toggle leaves only", severity="warning")
             return
         await self.store.toggle(todo_id)
         await self._update_labels()
@@ -422,11 +430,47 @@ class TodoApp(App):
         if node and node.is_expanded:
             node.collapse()
 
+    def action_press_h(self) -> None:
+        if self._h_pending:
+            self._h_pending = False
+            self.action_collapse_all_children()
+        else:
+            self._h_pending = True
+            self.action_collapse_node()
+            self.set_timer(0.3, self._reset_h)
+
+    def _reset_h(self) -> None:
+        self._h_pending = False
+
+    def action_collapse_all_children(self) -> None:
+        tree = self.query_one(TodoTree)
+        node = tree.cursor_node
+        if node:
+            self._collapse_recursive(node)
+
     def action_expand_node(self) -> None:
         tree = self.query_one(TodoTree)
         node = tree.cursor_node
         if node and not node.is_expanded:
             node.expand()
+
+    def action_press_l(self) -> None:
+        if self._l_pending:
+            self._l_pending = False
+            self.action_expand_all_children()
+        else:
+            self._l_pending = True
+            self.action_expand_node()
+            self.set_timer(0.3, self._reset_l)
+
+    def _reset_l(self) -> None:
+        self._l_pending = False
+
+    def action_expand_all_children(self) -> None:
+        tree = self.query_one(TodoTree)
+        node = tree.cursor_node
+        if node:
+            self._expand_recursive(node)
 
     def action_toggle_all(self) -> None:
         tree = self.query_one(TodoTree)

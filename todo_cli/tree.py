@@ -121,15 +121,15 @@ def flatten_tree(todos: list[Todo], collapsed: set[int] | None = None) -> list[F
 
 
 def format_time(iso_str: str) -> str:
-    """ISO 8601 → 'today' / 'yesterday' / 'MM/DD' / 'YYYY/MM/DD'"""
+    """ISO 8601 → '' (today) / '+1d' / '+2d' / … / 'MM/DD' / 'YYYY/MM/DD'"""
     try:
         dt = datetime.fromisoformat(iso_str)
         today = datetime.now().date()
         delta = (today - dt.date()).days
         if delta == 0:
-            return "today"
-        elif delta == 1:
-            return "yesterday"
+            return ""
+        elif delta <= 30:
+            return f"+{delta}d"
         elif dt.year == today.year:
             return dt.strftime("%m/%d")
         else:
