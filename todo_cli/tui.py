@@ -305,13 +305,13 @@ class TodoApp(App):
         if force_expand:
             expanded_ids |= force_expand
 
-        tree.clear()
-
+        # 先查数据，再清空树，避免 clear 和重建之间有 await 导致闪烁
         filter_done = self._filter_values[self._filter_mode]
         todos = await self.store.list_active()
         todos = filter_todos(todos, filter_done=filter_done, hide_stale=self._hide_stale)
-
         children_map = build_children_map(todos)
+
+        tree.clear()
         count = len(todos)
         suffix = f" {self._filter_labels[self._filter_mode].lower()}" if self._filter_mode else ""
         tree.root.set_label(f"[bold cyan]TODO[/bold cyan] ({count} items{suffix})")
@@ -491,7 +491,7 @@ class TodoApp(App):
         text = await self.push_screen_wait(InputScreen(prompt))
         if text:
             new_todo = await self.store.add(text, parent_id=todo_id)
-            await self._refresh_tree(select_id=todo_id, force_expand={todo_id})
+            await self._refresh_tree(select_id=new_todo.id, force_expand={todo_id})
 
     async def action_add_child(self) -> None:
         todo_id = self._get_selected_todo_id()
