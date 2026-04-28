@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-DEFAULT_DB_PATH = "~/.todo.db"
+DEFAULT_DB_PATH = os.environ.get("TODO_DB", "~/.todo.db")
 
 
 def create_engine_and_session(db_path: str | None = None):
@@ -27,14 +28,59 @@ def create_engine_and_session(db_path: str | None = None):
 
 
 async def init_db(engine) -> None:
-    """建表 + PRAGMA 设置。表结构与现有 schema 一致。"""
+    """PRAGMA 设置 + 通过 alembic migration 建表/迁移。"""
+    from alembic.config import Config as AlembicConfig
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
     from .models import Base
+
+    alembic_dir = os.path.join(os.path.dirname(__file__), "alembic")
+    cfg = AlembicConfig()
+    cfg.set_main_option("script_location", alembic_dir)
+    script = ScriptDirectory.from_config(cfg)
+
+    def _stamp_legacy_db(connection):
+        """旧数据库（create_all 创建）没有 alembic_version，需先 stamp。"""
+        result = connection.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'")
+        )
+        if result.fetchone() is None:
+            result = connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table' AND name='todos'")
+            )
+            if result.fetchone() is not None:
+                init_rev = script.get_bases()[0]
+                stamp_ctx = MigrationContext.configure(connection)
+                stamp_ctx._ensure_version_table()
+                connection.execute(
+                    stamp_ctx._version.insert().values(version_num=init_rev)
+                )
+
+    def _run_migrations(connection):
+        from alembic.operations import Operations
+
+        def upgrade(rev, _context):
+            return script._upgrade_revs("head", rev)
+
+        ctx = MigrationContext.configure(
+            connection,
+            opts={
+                "target_metadata": Base.metadata,
+                "fn": upgrade,
+                "render_as_batch": True,
+            },
+        )
+        with Operations.context(ctx):
+            with ctx.begin_transaction():
+                ctx.run_migrations()
 
     async with engine.begin() as conn:
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.execute(text("PRAGMA foreign_keys=ON"))
         await conn.execute(text("PRAGMA busy_timeout=5000"))
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_stamp_legacy_db)
+        await conn.run_sync(_run_migrations)
 
 
 async def seed_if_empty(session_factory: async_sessionmaker) -> None:

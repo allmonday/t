@@ -22,6 +22,11 @@ class TestAdd:
         assert todo.text == "任务A"
         assert todo.parent is None
         assert todo.done is False
+        assert todo.desc is None
+
+    async def test_with_desc(self, store: TodoStore):
+        todo = await store.add("任务", desc="详细说明")
+        assert todo.desc == "详细说明"
 
     async def test_child(self, store: TodoStore):
         parent = await store.add("父")
@@ -50,6 +55,21 @@ class TestUpdateText:
 
     async def test_nonexistent(self, store: TodoStore):
         assert await store.update_text(999, "x") is False
+
+
+class TestUpdateDesc:
+    async def test_success(self, store: TodoStore):
+        todo = await store.add("任务")
+        assert await store.update_desc(todo.id, "详细说明") is True
+        assert (await store.get(todo.id)).desc == "详细说明"
+
+    async def test_overwrite(self, store: TodoStore):
+        todo = await store.add("任务", desc="旧说明")
+        assert await store.update_desc(todo.id, "新说明") is True
+        assert (await store.get(todo.id)).desc == "新说明"
+
+    async def test_nonexistent(self, store: TodoStore):
+        assert await store.update_desc(999, "x") is False
 
 
 # ── toggle + _bubble_up ──

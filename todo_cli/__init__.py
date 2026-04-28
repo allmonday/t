@@ -11,12 +11,14 @@ def main() -> None:
     parser.add_argument("-p", "--parent", type=int, metavar="ID", help="Parent todo ID")
     parser.add_argument("-l", "--list", action="store_true", help="List all todos")
     parser.add_argument("-x", "--toggle", type=int, metavar="ID", help="Toggle todo done status")
+    parser.add_argument("--desc", type=int, metavar="ID", help="Set description for a todo (use with -m)")
+    parser.add_argument("-m", "--message", type=str, metavar="TEXT", help="Description text (use with --desc)")
     parser.add_argument("--done", action="store_true", help="Filter: show only done root tasks")
     parser.add_argument("--pending", action="store_true", help="Filter: show only pending root tasks")
 
     args = parser.parse_args()
 
-    if not args.text and not args.list and args.toggle is None:
+    if not args.text and not args.list and args.toggle is None and args.desc is None:
         # TUI 模式 — Textual 自管理 event loop
         from .tui import run_tui
         try:
@@ -48,6 +50,12 @@ def main() -> None:
             elif args.toggle is not None:
                 from .cli import cli_toggle
                 await cli_toggle(store, args.toggle)
+            elif args.desc is not None:
+                if not args.message:
+                    console.print("[red]--desc requires -m <description text>[/red]")
+                    sys.exit(1)
+                from .cli import cli_desc
+                await cli_desc(store, args.desc, args.message)
         finally:
             await engine.dispose()
 

@@ -19,6 +19,7 @@ class TodoORM(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     text = Column(Text, nullable=False)
+    desc = Column(Text, nullable=True)
     done = Column(Integer, nullable=False, default=0)
     parent = Column(Integer, ForeignKey("todos.id"), nullable=True)
     created = Column(Text, nullable=False)
@@ -53,6 +54,7 @@ class TodoEntity(BaseModel):
 
     id: int
     text: str
+    desc: Optional[str] = None
     done: bool = False
     parent: Optional[int] = None
     created: str = ""

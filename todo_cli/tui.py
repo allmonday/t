@@ -491,7 +491,7 @@ class TodoApp(App):
         text = await self.push_screen_wait(InputScreen(prompt))
         if text:
             new_todo = await self.store.add(text, parent_id=todo_id)
-            await self._refresh_tree(select_id=new_todo.id)
+            await self._refresh_tree(select_id=todo_id, force_expand={todo_id})
 
     async def action_add_child(self) -> None:
         todo_id = self._get_selected_todo_id()

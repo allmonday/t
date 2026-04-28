@@ -22,8 +22,9 @@ def _make_todo(
     created: str = TODAY_ISO,
     done_at: str | None = None,
     deleted_at: str | None = None,
+    desc: str | None = None,
 ) -> TodoEntity:
-    return TodoEntity(id=id, text=text, done=done, parent=parent,
+    return TodoEntity(id=id, text=text, desc=desc, done=done, parent=parent,
                       created=created, done_at=done_at, deleted_at=deleted_at)
 
 

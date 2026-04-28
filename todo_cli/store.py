@@ -76,6 +76,7 @@ class TodoStore:
                 TodoEntity(
                     id=r.id,
                     text=r.text,
+                    desc=r.desc,
                     done=bool(r.done),
                     parent=r.parent,
                     created=r.created,
@@ -97,14 +98,14 @@ class TodoStore:
 
     # ── mutations ──
 
-    async def add(self, text: str, parent_id: int | None = None) -> TodoEntity:
+    async def add(self, text: str, parent_id: int | None = None, desc: str | None = None) -> TodoEntity:
         async with self.session_factory() as session:
             if parent_id is not None:
                 parent = await session.get(TodoORM, parent_id)
                 if not parent or parent.deleted_at is not None:
                     raise ValueError(f"Parent todo #{parent_id} not found")
             now = datetime.now().isoformat()
-            orm = TodoORM(text=text, done=0, parent=parent_id, created=now)
+            orm = TodoORM(text=text, desc=desc, done=0, parent=parent_id, created=now)
             session.add(orm)
             await session.flush()
             await self._log_audit(session, "add", orm.id, {"text": text, "parent": parent_id})
@@ -119,6 +120,17 @@ class TodoStore:
             old_text = row.text
             row.text = new_text
             await self._log_audit(session, "edit", todo_id, {"old_text": old_text, "new_text": new_text})
+            await session.commit()
+            return True
+
+    async def update_desc(self, todo_id: int, new_desc: str) -> bool:
+        async with self.session_factory() as session:
+            row = await session.get(TodoORM, todo_id)
+            if not row or row.deleted_at is not None:
+                return False
+            old_desc = row.desc
+            row.desc = new_desc
+            await self._log_audit(session, "edit_desc", todo_id, {"old_desc": old_desc, "new_desc": new_desc})
             await session.commit()
             return True
 

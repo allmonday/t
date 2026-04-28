@@ -46,4 +46,21 @@ t -x <id>                # 切换完成状态
 
 ## 数据存储
 
-数据库文件：`~/.todo.db`（SQLite，首次运行自动创建）。
+数据库文件：`~/.todo.db`（SQLite，首次运行自动创建，自动执行数据库迁移）。
+
+## 开发
+
+```bash
+# 首次：初始化开发数据库
+uv run alembic upgrade head
+
+# 修改 ORM model 后生成迁移
+uv run alembic revision --autogenerate -m "描述"
+uv run alembic upgrade head
+
+# 使用开发数据库运行
+TODO_DB=dev.db uv run t
+
+# 重置开发数据库
+rm dev.db && uv run alembic upgrade head
+```

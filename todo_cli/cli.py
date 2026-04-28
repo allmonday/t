@@ -85,3 +85,13 @@ async def cli_toggle(store: TodoStore, todo_id: int) -> None:
         console.print(f"[green]Done[/green] [strike dim]#{todo_id}: {updated.text}[/strike dim]")
     elif updated:
         console.print(f"[yellow]Undone[/yellow] [cyan]#{todo_id}[/cyan]: {updated.text}")
+
+
+async def cli_desc(store: TodoStore, todo_id: int, desc: str) -> None:
+    todo = await store.get(todo_id)
+    if not todo:
+        raise CliError(f"Todo #{todo_id} not found.")
+    if await store.update_desc(todo_id, desc):
+        console.print(f"[green]Updated desc[/green] for [cyan]#{todo_id}[/cyan]: {todo.text}")
+    else:
+        raise CliError(f"Failed to update desc for #{todo_id}.")
