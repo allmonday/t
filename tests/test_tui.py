@@ -101,15 +101,15 @@ async def test_add_child_under_root(store):
 
         todo_id = _cursor_todo_id(app)
         assert todo_id is not None, "cursor should not be on root"
-        assert todo_id == root.id
 
         children = await store.get_children(root.id)
         assert len(children) == 1
         assert children[0].text == "sub"
+        assert todo_id == children[0].id
 
 
 async def test_add_child_consecutive_keeps_expanded(store):
-    """连续 Tab 添加子节点，父节点应保持展开，光标停在父节点上。"""
+    """连续 Tab 添加子节点，父节点应保持展开，光标停在新子节点上。"""
     root = await store.add("root")
     app = TodoApp(store)
     async with app.run_test() as pilot:
@@ -121,15 +121,21 @@ async def test_add_child_consecutive_keeps_expanded(store):
         await _type_and_submit(pilot, "c1")
         await pilot.pause()
 
+        children = await store.get_children(root.id)
+        assert len(children) == 1
+        assert _cursor_todo_id(app) == children[0].id
+
+        # 回到 root 再添加第二个子节点
+        await pilot.press("k")
         assert _cursor_todo_id(app) == root.id
-        assert len(await store.get_children(root.id)) == 1
 
         await pilot.press("tab")
         await _type_and_submit(pilot, "c2")
         await pilot.pause()
 
-        assert _cursor_todo_id(app) == root.id
-        assert len(await store.get_children(root.id)) == 2
+        children = await store.get_children(root.id)
+        assert len(children) == 2
+        assert _cursor_todo_id(app) == children[1].id
 
 
 # ── delete ──

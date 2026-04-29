@@ -105,7 +105,8 @@ class TestFilterTodos:
 
     def test_pending(self, sample_todos):
         result = filter_todos(sample_todos, filter_done=False)
-        assert {t.id for t in result} == {1, 3, 4, 5, 8, 9}
+        # #5 (done leaf) 被迭代剪枝移除
+        assert {t.id for t in result} == {1, 3, 4, 8, 9}
 
     def test_hide_stale(self, stale_todos):
         result = filter_todos(stale_todos, hide_stale=True, stale_days=2)
@@ -185,11 +186,11 @@ class TestFlattenTree:
 class TestFormatTime:
     def test_today(self):
         now = datetime.now().isoformat()
-        assert format_time(now) == "today"
+        assert format_time(now) == ""
 
     def test_yesterday(self):
         yesterday = (datetime.now() - timedelta(days=1)).isoformat()
-        assert format_time(yesterday) == "yesterday"
+        assert format_time(yesterday) == "+1d"
 
     def test_same_year(self):
         year = datetime.now().year

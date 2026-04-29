@@ -85,12 +85,22 @@ def filter_todos(
         for rid in matched_roots:
             for node in _collect_subtree(children_map, next(t for t in todos if t.id == rid)):
                 keep_ids.add(node.id)
-        # Pending 模式：隐藏已完成的叶子节点
+        # Pending 模式：迭代剪掉已完成的叶子节点
         if filter_done is False:
-            keep_ids -= {
-                t.id for t in todos
-                if t.id in keep_ids and t.done and t.id not in children_map
-            }
+            # 基于 keep_ids 重建 children 关系
+            kept_todos = [t for t in todos if t.id in keep_ids]
+            changed = True
+            while changed:
+                changed = False
+                parent_ids = {t.parent for t in kept_todos}
+                done_leaves = {
+                    t.id for t in kept_todos
+                    if t.done and t.id not in parent_ids
+                }
+                if done_leaves:
+                    keep_ids -= done_leaves
+                    kept_todos = [t for t in kept_todos if t.id not in done_leaves]
+                    changed = True
 
     # 按 stale 过滤
     if hide_stale:

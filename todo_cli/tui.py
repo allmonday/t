@@ -242,6 +242,7 @@ class TodoApp(App):
         Binding("e", "edit_todo", "Edit"),
         Binding("i", "show_info", "Info"),
         Binding("space", "toggle_todo", "Toggle", priority=True),
+        Binding("r", "refresh", "Refresh"),
         Binding("h", "press_h", "Collapse", priority=True),
         Binding("left", "collapse_node", "Collapse", show=False, priority=True),
         Binding("l", "press_l", "Expand", priority=True),
@@ -266,8 +267,8 @@ class TodoApp(App):
         super().__init__()
         self.store = store
         self._engine = engine
-        self._filter_labels = ["All", "Pending", "Done"]
-        self._filter_values: list[bool | None] = [None, False, True]
+        self._filter_labels = ["All", "Pending"]
+        self._filter_values: list[bool | None] = [None, False]
         self._hide_stale: bool = True
         self._g_pending: bool = False
         self._l_pending: bool = False
@@ -275,7 +276,7 @@ class TodoApp(App):
         ui_state = self._load_ui_state()
         self._saved_expanded: set[int] = ui_state.get("expanded", set())
         self._saved_theme: str = ui_state.get("theme", self._THEMES[0])
-        self._filter_mode: int = ui_state.get("filter_mode", 0)
+        self._filter_mode: int = min(ui_state.get("filter_mode", 0), 1)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -380,19 +381,20 @@ class TodoApp(App):
         # restore cursor
         if select_id and select_id in node_map:
             node = node_map[select_id]
+            # 检查所有祖先是否已展开，避免意外展开
+            visible = True
             parent = node.parent
-            while parent is not None:
-                parent.expand()
+            while parent is not None and parent != tree.root:
+                if not parent.is_expanded:
+                    visible = False
+                    break
                 parent = parent.parent
-            tree.root.expand()
+            if visible:
+                def _restore_cursor(n=node):
+                    tree.select_node(n)
+                    tree.scroll_to_node(n)
 
-            def _restore_cursor(n=node):
-                tree.select_node(n)
-                tree.scroll_to_node(n)
-
-            self.call_after_refresh(_restore_cursor)
-        else:
-            tree.root.expand()
+                self.call_after_refresh(_restore_cursor)
 
     @staticmethod
     def _collect_expanded(node: TreeNode[int], expanded_ids: set[int]) -> None:
@@ -681,10 +683,13 @@ class TodoApp(App):
         self.run_worker(self._delete_todo(todo_id))
 
     async def action_cycle_filter(self) -> None:
-        self._filter_mode = (self._filter_mode + 1) % 3
+        self._filter_mode = (self._filter_mode + 1) % 2
         self._update_header()
         self._save_ui_state()
         await self._refresh_tree()
+
+    async def action_refresh(self) -> None:
+        await self._refresh_tree(select_id=self._get_selected_todo_id())
 
     def action_toggle_theme(self) -> None:
         try:
