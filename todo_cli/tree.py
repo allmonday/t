@@ -13,6 +13,33 @@ def build_children_map(todos: list[Todo]) -> dict[int | None, list[Todo]]:
     return children_map
 
 
+def count_descendants(children_map: dict[int | None, list[Todo]]) -> dict[int, tuple[int, int]]:
+    """返回 {todo_id: (done_count, total_count)}，叶子节点不包含在结果中。"""
+    cache: dict[int, tuple[int, int]] = {}
+
+    def _count(node_id: int) -> tuple[int, int]:
+        if node_id in cache:
+            return cache[node_id]
+        children = children_map.get(node_id, [])
+        done = 0
+        total = 0
+        for c in children:
+            total += 1
+            if c.done:
+                done += 1
+            cd, ct = _count(c.id)
+            done += cd
+            total += ct
+        cache[node_id] = (done, total)
+        return done, total
+
+    for todo_id in children_map:
+        if todo_id is not None:
+            _count(todo_id)
+
+    return {tid: counts for tid, counts in cache.items() if counts[1] > 0}
+
+
 def get_roots(todos: list[Todo]) -> list[Todo]:
     return [t for t in todos if t.parent is None]
 
@@ -58,6 +85,12 @@ def filter_todos(
         for rid in matched_roots:
             for node in _collect_subtree(children_map, next(t for t in todos if t.id == rid)):
                 keep_ids.add(node.id)
+        # Pending 模式：隐藏已完成的叶子节点
+        if filter_done is False:
+            keep_ids -= {
+                t.id for t in todos
+                if t.id in keep_ids and t.done and t.id not in children_map
+            }
 
     # 按 stale 过滤
     if hide_stale:

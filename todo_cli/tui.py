@@ -13,7 +13,7 @@ from textual.widgets.tree import TreeNode
 
 from .models import TodoEntity
 from .store import TodoStore
-from .tree import build_children_map, filter_todos, format_time
+from .tree import build_children_map, count_descendants, filter_todos, format_time
 
 
 # ── helpers ──
@@ -34,11 +34,7 @@ class TodoTree(Tree[int]):
                 s = node_label.spans[0]
                 node_label.stylize("rgb(255,165,0) bold", s.start, s.end)
             node_label.stylize("underline")
-        if node._allow_expand:
-            icon = self.ICON_NODE_EXPANDED if node.is_expanded else self.ICON_NODE
-            text = Text.assemble((icon, base_style), node_label)
-        else:
-            text = Text.assemble(("", base_style), node_label)
+        text = Text.assemble(node_label)
         return text
 
     # 屏蔽鼠标事件，仅支持键盘交互
@@ -55,14 +51,17 @@ class TodoTree(Tree[int]):
         event.stop()
 
 
-def _render_label(todo: TodoEntity, is_leaf: bool = True) -> Text:
+def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int, int] | None = None) -> Text:
     time = format_time(todo.created)
     if todo.done:
         text = Text(style="dim")
         text.append(f"#{todo.id} ")
         text.append(todo.text, style="strike")
-        if time:
-            text.append(f"  {time}", style="italic")
+        if desc_count:
+            done, total = desc_count
+            text.append(f" [{done}/{total}]", style="dim italic")
+        if todo.desc:
+            text.append(" \u2139", style="dim")
         if todo.done_at:
             done_time = format_time(todo.done_at)
             if done_time:
@@ -71,6 +70,11 @@ def _render_label(todo: TodoEntity, is_leaf: bool = True) -> Text:
         text = Text()
         text.append(f"#{todo.id} ", style="dim")
         text.append(todo.text)
+        if desc_count:
+            done, total = desc_count
+            text.append(f" [{done}/{total}]", style="dim")
+        if todo.desc:
+            text.append(" \u2139", style="dim")
         if time:
             text.append(f"  {time}", style="dim italic")
     return text
@@ -139,6 +143,26 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class InfoScreen(ModalScreen[None]):
+    """只读信息弹窗，按任意键关闭。"""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("i", "close", "Close"),
+    ]
+
+    def __init__(self, title: str, body: str) -> None:
+        super().__init__()
+        self.title_text = title
+        self.body_text = body
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"{self.title_text}\n\n{self.body_text}")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 # ── main app ──
 
 
@@ -192,6 +216,16 @@ class TodoApp(App):
         background: $surface;
         border: round $primary;
     }
+    InfoScreen {
+        align: center middle;
+    }
+    InfoScreen Label {
+        width: auto;
+        max-width: 80%;
+        padding: 1 2;
+        background: $surface;
+        border: round $accent;
+    }
     """
 
     TITLE = "TODO"
@@ -206,6 +240,7 @@ class TodoApp(App):
         Binding("tab", "add_child", "Sub-task", priority=True),
         Binding("d", "delete_todo", "Delete"),
         Binding("e", "edit_todo", "Edit"),
+        Binding("i", "show_info", "Info"),
         Binding("space", "toggle_todo", "Toggle", priority=True),
         Binding("h", "press_h", "Collapse", priority=True),
         Binding("left", "collapse_node", "Collapse", show=False, priority=True),
@@ -213,7 +248,8 @@ class TodoApp(App):
         Binding("right", "expand_node", "Expand", show=False, priority=True),
         Binding("m", "toggle_all", "Fold/Unfold All", priority=True),
         Binding("f", "cycle_filter", "Filter"),
-        Binding("S", "toggle_stale", "Stale"),
+        Binding("colon", "goto_id", "Goto #", priority=True),
+        Binding("S", "toggle_stale", "Archived"),
         Binding("T", "toggle_theme", "Theme"),
         Binding("q", "quit", "Quit"),
     ]
@@ -230,7 +266,6 @@ class TodoApp(App):
         super().__init__()
         self.store = store
         self._engine = engine
-        self._filter_mode: int = 0  # 0=All, 1=Pending, 2=Done
         self._filter_labels = ["All", "Pending", "Done"]
         self._filter_values: list[bool | None] = [None, False, True]
         self._hide_stale: bool = True
@@ -240,6 +275,7 @@ class TodoApp(App):
         ui_state = self._load_ui_state()
         self._saved_expanded: set[int] = ui_state.get("expanded", set())
         self._saved_theme: str = ui_state.get("theme", self._THEMES[0])
+        self._filter_mode: int = ui_state.get("filter_mode", 0)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -256,7 +292,7 @@ class TodoApp(App):
         self.title = "TODO"
         label = self._filter_labels[self._filter_mode]
         stale_label = "hidden" if self._hide_stale else "shown"
-        self.sub_title = f"Filter: {label}  |  Stale: {stale_label}"
+        self.sub_title = f"Filter: {label}  |  Archived: {stale_label}"
         self.query_one("#status-bar", Static).update(f"Theme: {self.theme}")
 
     def _load_ui_state(self) -> dict:
@@ -266,6 +302,7 @@ class TodoApp(App):
             return {
                 "expanded": set(data.get("expanded", [])),
                 "theme": data.get("theme", self._THEMES[0]),
+                "filter_mode": data.get("filter_mode", 0),
             }
         except (FileNotFoundError, json.JSONDecodeError, TypeError):
             return self._migrate_pickle_state()
@@ -292,7 +329,7 @@ class TodoApp(App):
         expanded_ids: set[int] = set()
         for node in tree.root.children:
             self._collect_expanded(node, expanded_ids)
-        state = {"expanded": sorted(expanded_ids), "theme": self.theme}
+        state = {"expanded": sorted(expanded_ids), "theme": self.theme, "filter_mode": self._filter_mode}
         with open(self._UI_STATE_PATH, "w") as f:
             json.dump(state, f)
 
@@ -317,6 +354,7 @@ class TodoApp(App):
         todos = await self.store.list_active()
         todos = filter_todos(todos, filter_done=filter_done, hide_stale=self._hide_stale)
         children_map = build_children_map(todos)
+        desc_counts = count_descendants(children_map)
 
         tree.clear()
         count = len(todos)
@@ -329,7 +367,7 @@ class TodoApp(App):
         def add_nodes(parent_node: TreeNode[int], parent_id: int | None) -> None:
             for todo in children_map.get(parent_id, []):
                 has_children = todo.id in children_map
-                label = _render_label(todo, is_leaf=not has_children)
+                label = _render_label(todo, is_leaf=not has_children, desc_count=desc_counts.get(todo.id))
                 if has_children:
                     node = parent_node.add(label, data=todo.id, expand=(todo.id in expanded_ids))
                 else:
@@ -366,12 +404,15 @@ class TodoApp(App):
     async def _update_labels(self) -> None:
         """就地更新所有节点标签，不重建树，光标位置不变。仅用于 edit 场景。"""
         tree = self.query_one(TodoTree)
-        todos = {t.id: t for t in await self.store.list_active()}
+        todo_list = await self.store.list_active()
+        todos = {t.id: t for t in todo_list}
+        children_map = build_children_map(todo_list)
+        desc_counts = count_descendants(children_map)
 
         def walk(node: TreeNode[int]) -> None:
             if node.data is not None and node.data in todos:
                 is_leaf = not bool(node.children)
-                node.set_label(_render_label(todos[node.data], is_leaf=is_leaf))
+                node.set_label(_render_label(todos[node.data], is_leaf=is_leaf, desc_count=desc_counts.get(node.data)))
             for child in node.children:
                 walk(child)
 
@@ -413,6 +454,43 @@ class TodoApp(App):
 
     def action_cursor_down(self) -> None:
         self.query_one(TodoTree).action_cursor_down()
+
+    async def _goto_id(self) -> None:
+        text = await self.push_screen_wait(InputScreen("Goto #id"))
+        if not text:
+            return
+        raw = text.strip().lstrip("#")
+        try:
+            todo_id = int(raw)
+        except ValueError:
+            return
+        tree = self.query_one(TodoTree)
+
+        def find_node(node: TreeNode[int]) -> TreeNode[int] | None:
+            if node.data == todo_id:
+                return node
+            for child in node.children:
+                found = find_node(child)
+                if found:
+                    return found
+            return None
+
+        target = find_node(tree.root)
+        if target is None:
+            self.notify(f"#{todo_id} not found", severity="warning")
+            return
+        # 检查所有祖先是否已展开，未展开则不跳转
+        parent = target.parent
+        while parent is not None and parent != tree.root:
+            if not parent.is_expanded:
+                self.notify(f"#{todo_id} is hidden", severity="warning")
+                return
+            parent = parent.parent
+        tree.select_node(target)
+        tree.scroll_to_node(target)
+
+    async def action_goto_id(self) -> None:
+        self.run_worker(self._goto_id())
 
     async def action_toggle_todo(self) -> None:
         todo_id = self._get_selected_todo_id()
@@ -562,6 +640,19 @@ class TodoApp(App):
             return
         self.run_worker(self._edit_todo(todo_id))
 
+    async def _show_info(self, todo_id: int) -> None:
+        todo = await self.store.get(todo_id)
+        if not todo or not todo.desc:
+            self.notify("No description", severity="warning")
+            return
+        await self.push_screen_wait(InfoScreen(f"#{todo.id} {todo.text}", todo.desc))
+
+    async def action_show_info(self) -> None:
+        todo_id = self._get_selected_todo_id()
+        if todo_id is None:
+            return
+        self.run_worker(self._show_info(todo_id))
+
     async def _delete_todo(self, todo_id: int) -> None:
         todo = await self.store.get(todo_id)
         if not todo:
@@ -592,6 +683,7 @@ class TodoApp(App):
     async def action_cycle_filter(self) -> None:
         self._filter_mode = (self._filter_mode + 1) % 3
         self._update_header()
+        self._save_ui_state()
         await self._refresh_tree()
 
     def action_toggle_theme(self) -> None:
