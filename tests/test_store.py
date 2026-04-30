@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import text
 
-from todo_cli.store import TodoStore
+from todo_cli.store import PomodoroStore, TodoStore
 
 
 # ── lifecycle ──
@@ -201,3 +201,34 @@ class TestGetDescendants:
         await store.delete(c2.id)
         descs = await store.get_descendants(root.id)
         assert {t.id for t in descs} == {c1.id}
+
+
+# ── pomodoro store ──
+
+
+class TestPomodoroStore:
+    async def test_record_session(self, store: TodoStore):
+        pomo_store = PomodoroStore(store.session_factory)
+        session = await pomo_store.record_session(
+            started_at="2026-04-30T10:00:00",
+            finished_at="2026-04-30T10:25:00",
+            phase="focus",
+            duration_seconds=1500,
+            completed=True,
+        )
+        assert session.id is not None
+        assert session.phase == "focus"
+        assert session.duration_seconds == 1500
+        assert session.completed is True
+
+    async def test_record_skipped_session(self, store: TodoStore):
+        pomo_store = PomodoroStore(store.session_factory)
+        session = await pomo_store.record_session(
+            started_at="2026-04-30T10:00:00",
+            finished_at="2026-04-30T10:05:00",
+            phase="focus",
+            duration_seconds=300,
+            completed=False,
+        )
+        assert session.completed is False
+        assert session.duration_seconds == 300

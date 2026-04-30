@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from .models import AuditORM, TodoEntity, TodoORM
+from .models import AuditORM, PomodoroSessionEntity, PomodoroSessionORM, TodoEntity, TodoORM
 
 
 class TodoStore:
@@ -253,3 +253,40 @@ class TodoStore:
                 }
                 for r in rows
             ]
+
+
+class PomodoroStore:
+    def __init__(self, session_factory: async_sessionmaker):
+        self.session_factory = session_factory
+
+    async def record_session(
+        self,
+        started_at: str,
+        finished_at: str,
+        phase: str,
+        duration_seconds: int,
+        completed: bool,
+    ) -> PomodoroSessionEntity:
+        async with self.session_factory() as session:
+            orm = PomodoroSessionORM(
+                started_at=started_at,
+                finished_at=finished_at,
+                phase=phase,
+                duration_seconds=duration_seconds,
+                completed=int(completed),
+            )
+            session.add(orm)
+            await session.commit()
+            await session.refresh(orm)
+            return PomodoroSessionEntity.model_validate(orm)
+
+    async def today_sessions(self) -> list[PomodoroSessionEntity]:
+        today_prefix = datetime.now().strftime("%Y-%m-%d")
+        async with self.session_factory() as session:
+            stmt = (
+                select(PomodoroSessionORM)
+                .where(PomodoroSessionORM.started_at.like(f"{today_prefix}%"))
+                .order_by(PomodoroSessionORM.id)
+            )
+            rows = (await session.scalars(stmt)).all()
+            return [PomodoroSessionEntity.model_validate(r) for r in rows]

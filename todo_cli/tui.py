@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 
 from rich.text import Text
 from textual import on
@@ -12,7 +13,8 @@ from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from .models import TodoEntity
-from .store import TodoStore
+from .pomodoro import PHASE_LABELS, Phase, PhaseTransition, PomodoroTimer, TimerState
+from .store import PomodoroStore, TodoStore
 from .tree import build_children_map, count_descendants, filter_todos, format_time
 
 
@@ -163,6 +165,124 @@ class InfoScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+# ── pomodoro widgets ──
+
+
+class PomodoroBar(Static):
+    """Pomodoro progress bar, docked below Header."""
+
+    DEFAULT_CSS = """
+    PomodoroBar {
+        dock: top;
+        height: 1;
+        padding: 0 1;
+        display: none;
+    }
+    PomodoroBar.pomodoro-focus {
+        background: darkred;
+        color: white;
+        display: block;
+    }
+    PomodoroBar.pomodoro-break {
+        background: darkgreen;
+        color: white;
+        display: block;
+    }
+    PomodoroBar.pomodoro-long-break {
+        background: darkcyan;
+        color: white;
+        display: block;
+    }
+    """
+
+    def refresh_display(self, timer: PomodoroTimer) -> None:
+        self.remove_class("pomodoro-focus", "pomodoro-break", "pomodoro-long-break")
+        if timer.state == TimerState.IDLE:
+            return
+
+        phase_class = {
+            Phase.FOCUS: "pomodoro-focus",
+            Phase.BREAK: "pomodoro-break",
+            Phase.LONG_BREAK: "pomodoro-long-break",
+        }
+        self.add_class(phase_class[timer.phase])
+
+        label = PHASE_LABELS[timer.phase]
+        mins, secs = divmod(timer.remaining, 60)
+        time_str = f"{mins:02d}:{secs:02d}"
+
+        bar_width = max(20, self.size.width - len(label) - 30)
+        filled = int(bar_width * timer.progress)
+        empty = bar_width - filled
+        bar = "\u2588" * filled + "\u00b7" * empty
+
+        paused = " PAUSED" if timer.state == TimerState.PAUSED else ""
+
+        text = Text()
+        text.append("\U0001f345 ", style="bold")
+        text.append(f"{label}  ", style="bold")
+        text.append(f"[{bar}]  ")
+        text.append(f"{time_str}  ", style="bold")
+        text.append(f"Round {timer.display_round}", style="italic")
+        if paused:
+            text.append(paused, style="bold yellow")
+
+        self.update(text)
+
+
+class PomodoroMenuScreen(ModalScreen[str]):
+    """Pomodoro control menu."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("s", "select_start", "Start"),
+        Binding("p", "select_pause", "Pause"),
+        Binding("c", "select_resume", "Continue"),
+        Binding("n", "select_skip", "Next"),
+        Binding("x", "select_reset", "Reset"),
+        Binding("o", "select_history", "History"),
+    ]
+
+    def __init__(self, timer_state: TimerState) -> None:
+        super().__init__()
+        self.timer_state = timer_state
+
+    def compose(self) -> ComposeResult:
+        if self.timer_state == TimerState.IDLE:
+            msg = "\U0001f345 Pomodoro\n\n  \\[S]tart  \\[O] History\n  \\[Esc] Cancel"
+        elif self.timer_state == TimerState.RUNNING:
+            msg = "\U0001f345 Pomodoro (Running)\n\n  \\[P]ause  \\[N]ext  \\[X] Reset  \\[O] History\n  \\[Esc] Cancel"
+        else:
+            msg = "\U0001f345 Pomodoro (Paused)\n\n  \\[C]ontinue  \\[N]ext  \\[X] Reset  \\[O] History\n  \\[Esc] Cancel"
+        yield Label(msg)
+
+    def action_cancel(self) -> None:
+        self.dismiss("")
+
+    def action_select_start(self) -> None:
+        if self.timer_state == TimerState.IDLE:
+            self.dismiss("start")
+
+    def action_select_pause(self) -> None:
+        if self.timer_state == TimerState.RUNNING:
+            self.dismiss("pause")
+
+    def action_select_resume(self) -> None:
+        if self.timer_state == TimerState.PAUSED:
+            self.dismiss("resume")
+
+    def action_select_skip(self) -> None:
+        if self.timer_state != TimerState.IDLE:
+            self.dismiss("skip")
+
+    def action_select_reset(self) -> None:
+        if self.timer_state != TimerState.IDLE:
+            self.dismiss("reset")
+
+    def action_select_history(self) -> None:
+        self.dismiss("history")
+
+
 # ── main app ──
 
 
@@ -226,6 +346,15 @@ class TodoApp(App):
         background: $surface;
         border: round $accent;
     }
+    PomodoroMenuScreen {
+        align: center middle;
+    }
+    PomodoroMenuScreen Label {
+        width: auto;
+        padding: 1 2;
+        background: $surface;
+        border: round $primary;
+    }
     """
 
     TITLE = "TODO"
@@ -252,6 +381,7 @@ class TodoApp(App):
         Binding("colon", "goto_id", "Goto #", priority=True),
         Binding("S", "toggle_stale", "Archived"),
         Binding("T", "toggle_theme", "Theme"),
+        Binding("P", "pomodoro_menu", "Pomo"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -263,7 +393,7 @@ class TodoApp(App):
         "nord",
     ]
 
-    def __init__(self, store: TodoStore, engine=None) -> None:
+    def __init__(self, store: TodoStore, engine=None, session_factory=None) -> None:
         super().__init__()
         self.store = store
         self._engine = engine
@@ -273,6 +403,8 @@ class TodoApp(App):
         self._g_pending: bool = False
         self._l_pending: bool = False
         self._h_pending: bool = False
+        self._pomodoro = PomodoroTimer()
+        self._pomodoro_store = PomodoroStore(session_factory) if session_factory else None
         ui_state = self._load_ui_state()
         self._saved_expanded: set[int] = ui_state.get("expanded", set())
         self._saved_theme: str = ui_state.get("theme", self._THEMES[0])
@@ -280,6 +412,7 @@ class TodoApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield PomodoroBar()
         yield TodoTree("TODO")
         yield Static("", id="status-bar")
         yield Footer()
@@ -288,6 +421,7 @@ class TodoApp(App):
         self.theme = self._saved_theme
         self._update_header()
         await self._refresh_tree(force_expand=self._saved_expanded)
+        self.set_interval(1.0, self._pomodoro_tick)
 
     def _update_header(self) -> None:
         self.title = "TODO"
@@ -706,6 +840,100 @@ class TodoApp(App):
         self._update_header()
         await self._refresh_tree()
 
+    # ── pomodoro ──
+
+    async def _pomodoro_tick(self) -> None:
+        transition = self._pomodoro.tick()
+        bar = self.query_one(PomodoroBar)
+        bar.refresh_display(self._pomodoro)
+        if transition is not None:
+            if self._pomodoro_store:
+                await self._pomodoro_store.record_session(
+                    started_at=transition.started_at,
+                    finished_at=transition.finished_at,
+                    phase=transition.finished_phase.value,
+                    duration_seconds=transition.duration_seconds,
+                    completed=transition.completed,
+                )
+            self._send_pomodoro_notification(transition)
+
+    def _send_pomodoro_notification(self, transition: PhaseTransition) -> None:
+        phase_labels = {
+            Phase.FOCUS: "Focus session complete!",
+            Phase.BREAK: "Break is over!",
+            Phase.LONG_BREAK: "Long break is over!",
+        }
+        next_labels = {
+            Phase.FOCUS: "Time to focus",
+            Phase.BREAK: "Take a short break",
+            Phase.LONG_BREAK: "Take a long break",
+        }
+        title = phase_labels.get(transition.finished_phase, "Pomodoro")
+        body = next_labels.get(transition.next_phase, "")
+        try:
+            subprocess.run(
+                ["notify-send", title, body],
+                timeout=5,
+                capture_output=True,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    async def _pomodoro_menu(self) -> None:
+        action = await self.push_screen_wait(
+            PomodoroMenuScreen(self._pomodoro.state)
+        )
+        if not action:
+            return
+        if action == "start":
+            self._pomodoro.start()
+        elif action == "pause":
+            self._pomodoro.pause()
+        elif action == "resume":
+            self._pomodoro.resume()
+        elif action == "skip":
+            transition = self._pomodoro.skip()
+            if transition:
+                if self._pomodoro_store:
+                    await self._pomodoro_store.record_session(
+                        started_at=transition.started_at,
+                        finished_at=transition.finished_at,
+                        phase=transition.finished_phase.value,
+                        duration_seconds=transition.duration_seconds,
+                        completed=transition.completed,
+                    )
+                self._send_pomodoro_notification(transition)
+        elif action == "reset":
+            self._pomodoro.reset()
+        elif action == "history":
+            await self._show_pomodoro_history()
+            return
+        bar = self.query_one(PomodoroBar)
+        bar.refresh_display(self._pomodoro)
+
+    async def _show_pomodoro_history(self) -> None:
+        if not self._pomodoro_store:
+            return
+        sessions = await self._pomodoro_store.today_sessions()
+        if not sessions:
+            self.notify("No pomodoro sessions today", severity="warning")
+            return
+        focus_done = sum(1 for s in sessions if s.phase == "focus" and s.completed)
+        focus_skipped = sum(1 for s in sessions if s.phase == "focus" and not s.completed)
+        total_focus_min = sum(s.duration_seconds for s in sessions if s.phase == "focus" and s.completed) // 60
+        lines = [f"Today: {focus_done} focus completed, {focus_skipped} skipped, {total_focus_min} min total", ""]
+        for s in sessions:
+            phase_label = {"focus": "FOCUS", "break": "BREAK", "long_break": "LONG BREAK"}.get(s.phase, s.phase)
+            t = s.started_at[11:16]  # HH:MM
+            mins = s.duration_seconds // 60
+            status = "\u2713" if s.completed else "skip"
+            lines.append(f"  {t}  {phase_label:<12} {mins}min  {status}")
+        body = "\n".join(lines)
+        await self.push_screen_wait(InfoScreen("\U0001f345 Pomodoro History", body))
+
+    async def action_pomodoro_menu(self) -> None:
+        self.run_worker(self._pomodoro_menu())
+
 
 def run_tui() -> None:
     """TUI 入口，Textual 自管理 event loop。"""
@@ -722,5 +950,5 @@ def run_tui() -> None:
 
     engine, session_factory = asyncio.run(setup())
     store = TodoStore(session_factory)
-    app = TodoApp(store, engine)
+    app = TodoApp(store, engine, session_factory)
     app.run()

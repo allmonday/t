@@ -62,6 +62,32 @@ class TodoEntity(BaseModel):
     deleted_at: Optional[str] = None
 
 
+class PomodoroSessionORM(Base):
+    __tablename__ = "pomodoro_sessions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    started_at = Column(Text, nullable=False)
+    finished_at = Column(Text, nullable=False)
+    phase = Column(Text, nullable=False)  # "focus" | "break" | "long_break"
+    duration_seconds = Column(Integer, nullable=False)
+    completed = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("idx_pomodoro_started", "started_at"),
+    )
+
+
+class PomodoroSessionEntity(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    started_at: str
+    finished_at: str
+    phase: str
+    duration_seconds: int
+    completed: bool = True
+
+
 # ── Layer 3: 渲染辅助 ──
 
 
