@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -17,6 +18,10 @@ from .pomodoro import PHASE_LABELS, Phase, PhaseTransition, PomodoroTimer, Timer
 from .store import PomodoroStore, TodoStore
 from .tree import build_children_map, count_descendants, filter_todos, format_time
 
+
+# ── constants ──
+
+BOT_DIVIDER = "\n---\n🤖 bot:\n"
 
 # ── helpers ──
 
@@ -53,7 +58,7 @@ class TodoTree(Tree[int]):
         event.stop()
 
 
-def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int, int] | None = None) -> Text:
+def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int, int] | None = None, bot_running: set[int] | None = None) -> Text:
     time = format_time(todo.created)
     if todo.done:
         text = Text(style="dim")
@@ -64,6 +69,10 @@ def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int,
             text.append(f" [{done}/{total}]", style="dim italic")
         if todo.desc:
             text.append(" \u2139", style="dim")
+        if bot_running and todo.id in bot_running:
+            text.append(" 💭")
+        elif todo.desc and BOT_DIVIDER in todo.desc:
+            text.append(" 🤖")
         if todo.done_at:
             done_time = format_time(todo.done_at)
             if done_time:
@@ -77,6 +86,10 @@ def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int,
             text.append(f" [{done}/{total}]", style="dim")
         if todo.desc:
             text.append(" \u2139", style="dim")
+        if bot_running and todo.id in bot_running:
+            text.append(" 💭")
+        elif todo.desc and BOT_DIVIDER in todo.desc:
+            text.append(" 🤖")
         if time:
             text.append(f"  {time}", style="dim italic")
     return text
@@ -145,12 +158,13 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class InfoScreen(ModalScreen[None]):
+class InfoScreen(ModalScreen[str | None]):
     """只读信息弹窗，按任意键关闭。"""
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("i", "close", "Close"),
+        Binding("b", "dispatch", "Bot"),
     ]
 
     def __init__(self, title: str, body: str) -> None:
@@ -163,6 +177,9 @@ class InfoScreen(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+    def action_dispatch(self) -> None:
+        self.dismiss("dispatch")
 
 
 # ── pomodoro widgets ──
@@ -405,6 +422,7 @@ class TodoApp(App):
         self._h_pending: bool = False
         self._pomodoro = PomodoroTimer()
         self._pomodoro_store = PomodoroStore(session_factory) if session_factory else None
+        self._bot_running: set[int] = set()
         ui_state = self._load_ui_state()
         self._saved_expanded: set[int] = ui_state.get("expanded", set())
         self._saved_theme: str = ui_state.get("theme", self._THEMES[0])
@@ -502,7 +520,7 @@ class TodoApp(App):
         def add_nodes(parent_node: TreeNode[int], parent_id: int | None) -> None:
             for todo in children_map.get(parent_id, []):
                 has_children = todo.id in children_map
-                label = _render_label(todo, is_leaf=not has_children, desc_count=desc_counts.get(todo.id))
+                label = _render_label(todo, is_leaf=not has_children, desc_count=desc_counts.get(todo.id), bot_running=self._bot_running)
                 if has_children:
                     node = parent_node.add(label, data=todo.id, expand=(todo.id in expanded_ids))
                 else:
@@ -548,7 +566,7 @@ class TodoApp(App):
         def walk(node: TreeNode[int]) -> None:
             if node.data is not None and node.data in todos:
                 is_leaf = not bool(node.children)
-                node.set_label(_render_label(todos[node.data], is_leaf=is_leaf, desc_count=desc_counts.get(node.data)))
+                node.set_label(_render_label(todos[node.data], is_leaf=is_leaf, desc_count=desc_counts.get(node.data), bot_running=self._bot_running))
             for child in node.children:
                 walk(child)
 
@@ -778,16 +796,55 @@ class TodoApp(App):
 
     async def _show_info(self, todo_id: int) -> None:
         todo = await self.store.get(todo_id)
-        if not todo or not todo.desc:
-            self.notify("No description", severity="warning")
+        if not todo:
             return
-        await self.push_screen_wait(InfoScreen(f"#{todo.id} {todo.text}", todo.desc))
+        title = f"#{todo.id} {todo.text}"
+        body = todo.desc or "(no description)"
+        result = await self.push_screen_wait(InfoScreen(title, body))
+        if result == "dispatch":
+            self.run_worker(self._dispatch_claude(todo_id))
 
     async def action_show_info(self) -> None:
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             return
         self.run_worker(self._show_info(todo_id))
+
+    async def _dispatch_claude(self, todo_id: int) -> None:
+        if todo_id in self._bot_running:
+            self.notify("Already running", severity="warning")
+            return
+        todo = await self.store.get(todo_id)
+        if not todo:
+            return
+        if todo.desc:
+            prompt = f"Todo: {todo.text}\n\nDescription:\n{todo.desc}"
+        else:
+            prompt = f"Todo: {todo.text}"
+        self._bot_running.add(todo_id)
+        await self._update_labels()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "-p", prompt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                response = stdout.decode().strip()
+                fresh = await self.store.get(todo_id)
+                if fresh:
+                    new_desc = (fresh.desc or "") + BOT_DIVIDER + response
+                    await self.store.update_desc(todo_id, new_desc)
+                self.notify(f"Bot replied on #{todo_id}")
+            else:
+                err = stderr.decode()[:100]
+                self.notify(f"Claude error: {err}", severity="error")
+        except FileNotFoundError:
+            self.notify("claude CLI not found", severity="error")
+        finally:
+            self._bot_running.discard(todo_id)
+            await self._update_labels()
 
     async def _delete_todo(self, todo_id: int) -> None:
         todo = await self.store.get(todo_id)
