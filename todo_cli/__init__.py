@@ -2,7 +2,32 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
+
+
+def _load_config() -> dict:
+    path = os.path.expanduser("~/.todo")
+    if not os.path.isfile(path):
+        return {}
+    config = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            config[key.strip()] = value.strip()
+    return config
+
+
+def _get_remote_config(args_url=None, args_token=None):
+    cfg = _load_config()
+    url = args_url or os.environ.get("TODO_REMOTE_URL") or cfg.get("remote")
+    token = args_token or os.environ.get("TODO_REMOTE_TOKEN") or cfg.get("token")
+    return url, token
 
 
 def main() -> None:
@@ -15,49 +40,77 @@ def main() -> None:
     parser.add_argument("-m", "--message", type=str, metavar="TEXT", help="Description text (use with --desc)")
     parser.add_argument("--done", action="store_true", help="Filter: show only done root tasks")
     parser.add_argument("--pending", action="store_true", help="Filter: show only pending root tasks")
+    parser.add_argument("--remote", type=str, metavar="URL", help="Remote server URL")
+    parser.add_argument("--token", type=str, metavar="TOKEN", help="API token for remote server")
+    parser.add_argument("--token_env", type=str, metavar="ENV_VAR", help="Read API token from this environment variable")
+    parser.add_argument("--server", action="store_true", help="Start standalone HTTP server")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Server bind host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8000, help="Server bind port (default: 8000)")
+    parser.add_argument("--db", type=str, default=None, help="Database path (default: ~/.todo.db)")
 
     args = parser.parse_args()
 
+    # ── server mode ──
+    if args.server:
+        token = args.token or (os.environ.get(args.token_env) if args.token_env else None)
+        if not token:
+            print("Error: --token or --token_env is required when running as server", file=sys.stderr)
+            sys.exit(1)
+        import uvicorn
+        from .server.app import create_app
+        app, _ = create_app(db_path=args.db, api_token=token)
+        uvicorn.run(app, host=args.host, port=args.port)
+        return
+
+    remote_url, remote_token = _get_remote_config(
+        args.remote,
+        args.token or (os.environ.get(args.token_env) if args.token_env else None),
+    )
+    if remote_url and not remote_url.startswith("https://"):
+        print(f"Warning: remote URL is not HTTPS: {remote_url}", file=sys.stderr)
+
     if not args.text and not args.list and args.toggle is None and args.desc is None:
-        # TUI 模式 — Textual 自管理 event loop
+        # TUI mode
         from .tui import run_tui
         try:
-            run_tui()
+            run_tui(remote_url=remote_url, remote_token=remote_token)
         except KeyboardInterrupt:
             pass
         return
 
-    # CLI 模式 — 用 asyncio.run() 桥接
+    # CLI mode
     from .cli import CliError, console
 
     async def async_main():
-        from .db import create_engine_and_session, init_db, seed_if_empty
-        from .store import TodoStore
+        from .client import TodoClient
+        from .server.runner import start_embedded_server
 
-        engine, session_factory = create_engine_and_session()
-        await init_db(engine)
-        await seed_if_empty(session_factory)
-        store = TodoStore(session_factory)
+        if remote_url:
+            base_url = remote_url
+            token = remote_token or ""
+        else:
+            base_url, token = start_embedded_server()
 
+        client = TodoClient(base_url, api_token=token if token else None)
         try:
             if args.text:
                 from .cli import cli_add
-                await cli_add(store, " ".join(args.text), args.parent)
+                await cli_add(client, " ".join(args.text), args.parent)
             elif args.list:
                 from .cli import cli_list
                 filter_done = True if args.done else (False if args.pending else None)
-                await cli_list(store, filter_done=filter_done)
+                await cli_list(client, filter_done=filter_done)
             elif args.toggle is not None:
                 from .cli import cli_toggle
-                await cli_toggle(store, args.toggle)
+                await cli_toggle(client, args.toggle)
             elif args.desc is not None:
                 if not args.message:
                     console.print("[red]--desc requires -m <description text>[/red]")
                     sys.exit(1)
                 from .cli import cli_desc
-                await cli_desc(store, args.desc, args.message)
+                await cli_desc(client, args.desc, args.message)
         finally:
-            await engine.dispose()
+            await client.close()
 
     try:
         asyncio.run(async_main())
