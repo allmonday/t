@@ -53,7 +53,7 @@ t --server --token <your-secret> --port 8000
 
 ### 远程连接
 
-客户端通过配置文件 `~/.todo` 或命令行参数连接远程 server：
+客户端通过配置文件 `~/.todoiumrc` 或命令行参数连接远程 server：
 
 ```bash
 # 命令行参数
