@@ -13,9 +13,9 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
+from .client import TodoClient, TodoClientError
 from .models import TodoEntity
 from .pomodoro import PHASE_LABELS, Phase, PhaseTransition, PomodoroTimer, TimerState
-from .store import PomodoroStore, TodoStore
 from .tree import build_children_map, count_descendants, filter_todos, format_time
 
 
@@ -410,10 +410,9 @@ class TodoApp(App):
         "nord",
     ]
 
-    def __init__(self, store: TodoStore, engine=None, session_factory=None) -> None:
+    def __init__(self, client: TodoClient) -> None:
         super().__init__()
-        self.store = store
-        self._engine = engine
+        self.client = client
         self._filter_labels = ["All", "Pending"]
         self._filter_values: list[bool | None] = [None, False]
         self._hide_stale: bool = True
@@ -421,7 +420,6 @@ class TodoApp(App):
         self._l_pending: bool = False
         self._h_pending: bool = False
         self._pomodoro = PomodoroTimer()
-        self._pomodoro_store = PomodoroStore(session_factory) if session_factory else None
         self._bot_running: set[int] = set()
         ui_state = self._load_ui_state()
         self._saved_expanded: set[int] = ui_state.get("expanded", set())
@@ -486,8 +484,9 @@ class TodoApp(App):
         with open(self._UI_STATE_PATH, "w") as f:
             json.dump(state, f)
 
-    def action_quit(self) -> None:
+    async def action_quit(self) -> None:
         self._save_ui_state()
+        await self.client.close()
         self.exit()
 
     # ── tree building ──
@@ -504,7 +503,7 @@ class TodoApp(App):
 
         # 先查数据，再清空树，避免 clear 和重建之间有 await 导致闪烁
         filter_done = self._filter_values[self._filter_mode]
-        todos = await self.store.list_active()
+        todos = await self.client.list_active()
         todos = filter_todos(todos, filter_done=filter_done, hide_stale=self._hide_stale)
         children_map = build_children_map(todos)
         desc_counts = count_descendants(children_map)
@@ -558,7 +557,7 @@ class TodoApp(App):
     async def _update_labels(self) -> None:
         """就地更新所有节点标签，不重建树，光标位置不变。仅用于 edit 场景。"""
         tree = self.query_one(TodoTree)
-        todo_list = await self.store.list_active()
+        todo_list = await self.client.list_active()
         todos = {t.id: t for t in todo_list}
         children_map = build_children_map(todo_list)
         desc_counts = count_descendants(children_map)
@@ -650,10 +649,10 @@ class TodoApp(App):
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             return
-        if await self.store.has_children(todo_id):
+        if await self.client.has_children(todo_id):
             self.notify("Has sub-tasks, toggle leaves only", severity="warning")
             return
-        await self.store.toggle(todo_id)
+        await self.client.toggle(todo_id)
         await self._update_labels()
 
     def action_collapse_node(self) -> None:
@@ -730,19 +729,19 @@ class TodoApp(App):
             TodoApp._expand_recursive(child)
 
     async def _add_sibling(self, todo_id: int) -> None:
-        todo = await self.store.get(todo_id)
+        todo = await self.client.get(todo_id)
         if not todo:
             return
         parent_id = todo.parent
 
         if parent_id:
-            parent = await self.store.get(parent_id)
+            parent = await self.client.get(parent_id)
             prompt = f"Sibling of #{todo_id}" + (f" (under {parent.text[:20]})" if parent else "")
         else:
             prompt = "New root todo"
         text = await self.push_screen_wait(InputScreen(prompt))
         if text:
-            new_todo = await self.store.add(text, parent_id=parent_id)
+            new_todo = await self.client.add(text, parent_id=parent_id)
             await self._refresh_tree(select_id=new_todo.id)
 
     async def action_add_sibling(self) -> None:
@@ -755,18 +754,18 @@ class TodoApp(App):
     async def _add_root(self) -> None:
         text = await self.push_screen_wait(InputScreen("New root todo"))
         if text:
-            todo = await self.store.add(text)
+            todo = await self.client.add(text)
             await self._refresh_tree(select_id=todo.id)
 
     async def action_add_root(self) -> None:
         self.run_worker(self._add_root())
 
     async def _add_child(self, todo_id: int) -> None:
-        todo = await self.store.get(todo_id)
+        todo = await self.client.get(todo_id)
         prompt = f"Sub-task of #{todo_id}" + (f" ({todo.text[:20]})" if todo else "")
         text = await self.push_screen_wait(InputScreen(prompt))
         if text:
-            new_todo = await self.store.add(text, parent_id=todo_id)
+            new_todo = await self.client.add(text, parent_id=todo_id)
             await self._refresh_tree(select_id=new_todo.id, force_expand={todo_id})
 
     async def action_add_child(self) -> None:
@@ -777,15 +776,15 @@ class TodoApp(App):
             self.run_worker(self._add_child(todo_id))
 
     async def _edit_todo(self, todo_id: int) -> None:
-        todo = await self.store.get(todo_id)
+        todo = await self.client.get(todo_id)
         if not todo:
             return
         new_text = await self.push_screen_wait(InputScreen(f"Edit #{todo_id} text", default=todo.text))
         if new_text and new_text != todo.text:
-            await self.store.update_text(todo_id, new_text)
+            await self.client.update_text(todo_id, new_text)
         new_desc = await self.push_screen_wait(InputScreen(f"Edit #{todo_id} desc", default=todo.desc or ""))
         if new_desc and new_desc != (todo.desc or ""):
-            await self.store.update_desc(todo_id, new_desc)
+            await self.client.update_desc(todo_id, new_desc)
         await self._update_labels()
 
     async def action_edit_todo(self) -> None:
@@ -795,7 +794,7 @@ class TodoApp(App):
         self.run_worker(self._edit_todo(todo_id))
 
     async def _show_info(self, todo_id: int) -> None:
-        todo = await self.store.get(todo_id)
+        todo = await self.client.get(todo_id)
         if not todo:
             return
         title = f"#{todo.id} {todo.text}"
@@ -814,7 +813,7 @@ class TodoApp(App):
         if todo_id in self._bot_running:
             self.notify("Already running", severity="warning")
             return
-        todo = await self.store.get(todo_id)
+        todo = await self.client.get(todo_id)
         if not todo:
             return
         if todo.desc:
@@ -832,10 +831,10 @@ class TodoApp(App):
             stdout, stderr = await proc.communicate()
             if proc.returncode == 0:
                 response = stdout.decode().strip()
-                fresh = await self.store.get(todo_id)
+                fresh = await self.client.get(todo_id)
                 if fresh:
                     new_desc = (fresh.desc or "") + BOT_DIVIDER + response
-                    await self.store.update_desc(todo_id, new_desc)
+                    await self.client.update_desc(todo_id, new_desc)
                 self.notify(f"Bot replied on #{todo_id}")
             else:
                 err = stderr.decode()[:100]
@@ -847,10 +846,10 @@ class TodoApp(App):
             await self._update_labels()
 
     async def _delete_todo(self, todo_id: int) -> None:
-        todo = await self.store.get(todo_id)
+        todo = await self.client.get(todo_id)
         if not todo:
             return
-        desc_count = len(await self.store.get_descendants(todo_id))
+        desc_count = len(await self.client.get_descendants(todo_id))
         if desc_count > 0:
             msg = f'Delete "#{todo_id} {todo.text}" and {desc_count} subtask(s)? (y/n)'
         else:
@@ -859,12 +858,12 @@ class TodoApp(App):
         if confirmed:
             parent_id = todo.parent
             if parent_id:
-                siblings = await self.store.get_children(parent_id)
+                siblings = await self.client.get_children(parent_id)
             else:
-                siblings = [t for t in await self.store.list_active() if t.parent is None]
+                siblings = [t for t in await self.client.list_active() if t.parent is None]
             sibling_id = next((s.id for s in siblings if s.id != todo_id), None)
             select_id = sibling_id or parent_id
-            await self.store.delete(todo_id)
+            await self.client.delete(todo_id)
             await self._refresh_tree(select_id=select_id)
 
     async def action_delete_todo(self) -> None:
@@ -904,14 +903,17 @@ class TodoApp(App):
         bar = self.query_one(PomodoroBar)
         bar.refresh_display(self._pomodoro)
         if transition is not None:
-            if self._pomodoro_store:
-                await self._pomodoro_store.record_session(
-                    started_at=transition.started_at,
-                    finished_at=transition.finished_at,
-                    phase=transition.finished_phase.value,
-                    duration_seconds=transition.duration_seconds,
-                    completed=transition.completed,
-                )
+            if self.client.pomodoro:
+                try:
+                    await self.client.pomodoro.record_session(
+                        started_at=transition.started_at,
+                        finished_at=transition.finished_at,
+                        phase=transition.finished_phase.value,
+                        duration_seconds=transition.duration_seconds,
+                        completed=transition.completed,
+                    )
+                except TodoClientError:
+                    pass
             self._send_pomodoro_notification(transition)
 
     def _send_pomodoro_notification(self, transition: PhaseTransition) -> None:
@@ -951,14 +953,16 @@ class TodoApp(App):
         elif action == "skip":
             transition = self._pomodoro.skip()
             if transition:
-                if self._pomodoro_store:
-                    await self._pomodoro_store.record_session(
+                try:
+                    await self.client.pomodoro.record_session(
                         started_at=transition.started_at,
                         finished_at=transition.finished_at,
                         phase=transition.finished_phase.value,
                         duration_seconds=transition.duration_seconds,
                         completed=transition.completed,
                     )
+                except TodoClientError:
+                    pass
                 self._send_pomodoro_notification(transition)
         elif action == "reset":
             self._pomodoro.reset()
@@ -969,9 +973,11 @@ class TodoApp(App):
         bar.refresh_display(self._pomodoro)
 
     async def _show_pomodoro_history(self) -> None:
-        if not self._pomodoro_store:
+        try:
+            sessions = await self.client.pomodoro.today_sessions()
+        except TodoClientError:
+            self.notify("Failed to load pomodoro history", severity="error")
             return
-        sessions = await self._pomodoro_store.today_sessions()
         if not sessions:
             self.notify("No pomodoro sessions today", severity="warning")
             return
@@ -992,20 +998,24 @@ class TodoApp(App):
         self.run_worker(self._pomodoro_menu())
 
 
-def run_tui() -> None:
-    """TUI 入口，Textual 自管理 event loop。"""
-    import asyncio
+def run_tui(
+    remote_url: str | None = None,
+    remote_token: str | None = None,
+    db_path: str | None = None,
+) -> None:
+    """TUI entry point. Textual manages the event loop."""
+    from .client import TodoClient
+    from .server.runner import start_embedded_server
 
-    from .db import create_engine_and_session, init_db, seed_if_empty
-    from .store import TodoStore
+    if remote_url:
+        base_url = remote_url
+        token = remote_token or ""
+    else:
+        base_url, token = start_embedded_server(db_path=db_path)
 
-    async def setup():
-        engine, session_factory = create_engine_and_session()
-        await init_db(engine)
-        await seed_if_empty(session_factory)
-        return engine, session_factory
-
-    engine, session_factory = asyncio.run(setup())
-    store = TodoStore(session_factory)
-    app = TodoApp(store, engine, session_factory)
-    app.run()
+    client = TodoClient(base_url, api_token=token if token else None)
+    app = TodoApp(client)
+    try:
+        app.run()
+    finally:
+        pass

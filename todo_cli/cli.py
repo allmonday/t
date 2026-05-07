@@ -4,8 +4,8 @@ from rich.console import Console
 from rich.text import Text
 from rich.tree import Tree
 
+from .client import TodoClient
 from .models import TodoEntity
-from .store import TodoStore
 from .tree import build_children_map, filter_by_roots, format_time
 
 console = Console()
@@ -39,7 +39,7 @@ def _build_rich_tree(parent_tree: Tree, parent_id: int, children_map: dict[int |
         _build_rich_tree(branch, child.id, children_map)
 
 
-async def cli_list(store: TodoStore, filter_done: bool | None = None) -> None:
+async def cli_list(store: TodoClient, filter_done: bool | None = None) -> None:
     todos = await store.list_active()
     todos = filter_by_roots(todos, filter_done)
     if not todos:
@@ -62,7 +62,7 @@ async def cli_list(store: TodoStore, filter_done: bool | None = None) -> None:
     console.print(tree)
 
 
-async def cli_add(store: TodoStore, text: str, parent_id: int | None = None) -> None:
+async def cli_add(store: TodoClient, text: str, parent_id: int | None = None) -> None:
     if not text.strip():
         raise CliError("Task text cannot be empty.")
     try:
@@ -73,7 +73,7 @@ async def cli_add(store: TodoStore, text: str, parent_id: int | None = None) -> 
     console.print(f"[green]Added[/green] [cyan]#{todo.id}[/cyan]: {todo.text}{parent_info}")
 
 
-async def cli_toggle(store: TodoStore, todo_id: int) -> None:
+async def cli_toggle(store: TodoClient, todo_id: int) -> None:
     todo = await store.get(todo_id)
     if not todo:
         raise CliError(f"Todo #{todo_id} not found.")
@@ -87,7 +87,7 @@ async def cli_toggle(store: TodoStore, todo_id: int) -> None:
         console.print(f"[yellow]Undone[/yellow] [cyan]#{todo_id}[/cyan]: {updated.text}")
 
 
-async def cli_desc(store: TodoStore, todo_id: int, desc: str) -> None:
+async def cli_desc(store: TodoClient, todo_id: int, desc: str) -> None:
     todo = await store.get(todo_id)
     if not todo:
         raise CliError(f"Todo #{todo_id} not found.")

@@ -1,14 +1,18 @@
 [project]
-name = "todo-cli"
+name = "just-do-it"
 version = "0.1.0"
+authors = [{ name = "tangkikodo", email = "allmonday@126.com" }]
 requires-python = ">=3.10"
 dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.18.4",
+    "fastapi>=0.136.1",
+    "httpx>=0.28.1",
     "pydantic-resolve>=5.3.1",
     "rich",
     "sqlalchemy[aiosqlite]>=2.0.49",
     "textual",
+    "uvicorn[standard]>=0.46.0",
 ]
 
 [project.scripts]
