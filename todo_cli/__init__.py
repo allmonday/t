@@ -7,7 +7,7 @@ import sys
 
 
 def _load_config() -> dict:
-    path = os.path.expanduser("~/.todo")
+    path = os.path.expanduser("~/.todoiumrc")
     if not os.path.isfile(path):
         return {}
     config = {}
