@@ -73,7 +73,7 @@ def main() -> None:
         # TUI mode
         from .tui import run_tui
         try:
-            run_tui(remote_url=remote_url, remote_token=remote_token)
+            run_tui(remote_url=remote_url, remote_token=remote_token, db_path=args.db)
         except KeyboardInterrupt:
             pass
         return
@@ -89,7 +89,7 @@ def main() -> None:
             base_url = remote_url
             token = remote_token or ""
         else:
-            base_url, token = start_embedded_server()
+            base_url, token = start_embedded_server(db_path=args.db)
 
         client = TodoClient(base_url, api_token=token if token else None)
         try:

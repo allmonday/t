@@ -1,6 +1,7 @@
 [project]
-name = "todo-cli"
+name = "just-do-it"
 version = "0.1.0"
+authors = [{ name = "tangkikodo", email = "allmonday@126.com" }]
 requires-python = ">=3.10"
 dependencies = [
     "aiosqlite>=0.22.1",
