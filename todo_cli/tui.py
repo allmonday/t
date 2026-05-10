@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import platform
 import subprocess
 
 from rich.text import Text
@@ -15,7 +16,7 @@ from textual.widgets.tree import TreeNode
 
 from .client import TodoClient, TodoClientError
 from .models import TodoEntity
-from .pomodoro import PHASE_LABELS, Phase, PhaseTransition, PomodoroTimer, TimerState
+from .pomodoro import DEFAULT_DURATIONS, PHASE_LABELS, Phase, PhaseTransition, PomodoroTimer, TimerState
 from .tree import build_children_map, count_descendants, filter_todos, format_time
 
 
@@ -210,7 +211,15 @@ class PomodoroBar(Static):
         color: white;
         display: block;
     }
+    PomodoroBar.pomodoro-flash {
+        background: $warning;
+        color: black;
+    }
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._flash_count = 0
 
     def refresh_display(self, timer: PomodoroTimer) -> None:
         self.remove_class("pomodoro-focus", "pomodoro-break", "pomodoro-long-break")
@@ -231,7 +240,7 @@ class PomodoroBar(Static):
         bar_width = max(20, self.size.width - len(label) - 30)
         filled = int(bar_width * timer.progress)
         empty = bar_width - filled
-        bar = "\u2588" * filled + "\u00b7" * empty
+        bar = "\u25cb" * filled + "\u00b7" * empty
 
         paused = " PAUSED" if timer.state == TimerState.PAUSED else ""
 
@@ -245,6 +254,22 @@ class PomodoroBar(Static):
             text.append(paused, style="bold yellow")
 
         self.update(text)
+
+    def flash(self) -> None:
+        """Flash the bar to signal phase completion."""
+        self._flash_count = 6
+        self._do_flash()
+
+    def _do_flash(self) -> None:
+        if self._flash_count <= 0:
+            self.remove_class("pomodoro-flash")
+            return
+        if self._flash_count % 2 == 0:
+            self.add_class("pomodoro-flash")
+        else:
+            self.remove_class("pomodoro-flash")
+        self._flash_count -= 1
+        self.set_timer(0.2, self._do_flash)
 
 
 class PomodoroMenuScreen(ModalScreen[str]):
@@ -410,7 +435,7 @@ class TodoApp(App):
         "nord",
     ]
 
-    def __init__(self, client: TodoClient) -> None:
+    def __init__(self, client: TodoClient, pomo_durations: dict[Phase, int] | None = None) -> None:
         super().__init__()
         self.client = client
         self._filter_labels = ["All", "Pending"]
@@ -419,7 +444,7 @@ class TodoApp(App):
         self._g_pending: bool = False
         self._l_pending: bool = False
         self._h_pending: bool = False
-        self._pomodoro = PomodoroTimer()
+        self._pomodoro = PomodoroTimer(durations=pomo_durations)
         self._bot_running: set[int] = set()
         ui_state = self._load_ui_state()
         self._saved_expanded: set[int] = ui_state.get("expanded", set())
@@ -915,6 +940,25 @@ class TodoApp(App):
                 except TodoClientError:
                     pass
             self._send_pomodoro_notification(transition)
+            self.run_worker(self._pomodoro_complete(transition))
+
+    async def _pomodoro_complete(self, transition: PhaseTransition) -> None:
+        title = {
+            Phase.FOCUS: "Focus session complete!",
+            Phase.BREAK: "Break is over!",
+            Phase.LONG_BREAK: "Long break is over!",
+        }
+        body = {
+            Phase.FOCUS: "Time to focus",
+            Phase.BREAK: "Take a short break",
+            Phase.LONG_BREAK: "Take a long break",
+        }
+        await self.push_screen_wait(InfoScreen(
+            title.get(transition.finished_phase, "Pomodoro"),
+            body.get(transition.next_phase, ""),
+        ))
+        bar = self.query_one(PomodoroBar)
+        bar.flash()
 
     def _send_pomodoro_notification(self, transition: PhaseTransition) -> None:
         phase_labels = {
@@ -930,11 +974,19 @@ class TodoApp(App):
         title = phase_labels.get(transition.finished_phase, "Pomodoro")
         body = next_labels.get(transition.next_phase, "")
         try:
-            subprocess.run(
-                ["notify-send", title, body],
-                timeout=5,
-                capture_output=True,
-            )
+            if platform.system() == "Darwin":
+                subprocess.run(
+                    ["osascript", "-e",
+                     f'display notification "{body}" with title "{title}" sound name "Glass"'],
+                    timeout=5,
+                    capture_output=True,
+                )
+            else:
+                subprocess.run(
+                    ["notify-send", title, body],
+                    timeout=5,
+                    capture_output=True,
+                )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
@@ -1002,6 +1054,7 @@ def run_tui(
     remote_url: str | None = None,
     remote_token: str | None = None,
     db_path: str | None = None,
+    pomo_durations: dict[Phase, int] | None = None,
 ) -> None:
     """TUI entry point. Textual manages the event loop."""
     from .client import TodoClient
@@ -1014,7 +1067,7 @@ def run_tui(
         base_url, token = start_embedded_server(db_path=db_path)
 
     client = TodoClient(base_url, api_token=token if token else None)
-    app = TodoApp(client)
+    app = TodoApp(client, pomo_durations=pomo_durations)
     try:
         app.run()
     finally:

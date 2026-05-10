@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 
 from todo_cli.pomodoro import (
+    DEFAULT_DURATIONS,
     LONG_BREAK_INTERVAL,
-    PHASE_DURATIONS,
     Phase,
     PomodoroTimer,
     TimerState,
@@ -45,8 +45,8 @@ def test_tick_decrements_remaining():
     # Simulate 10 seconds passing
     t._last_tick = time.monotonic() - 10
     t.tick()
-    assert t.remaining <= PHASE_DURATIONS[Phase.FOCUS] - 9  # allow small drift
-    assert t.remaining >= PHASE_DURATIONS[Phase.FOCUS] - 11
+    assert t.remaining <= DEFAULT_DURATIONS[Phase.FOCUS] - 9  # allow small drift
+    assert t.remaining >= DEFAULT_DURATIONS[Phase.FOCUS] - 11
 
 
 def test_tick_when_idle_returns_none():
@@ -65,7 +65,7 @@ def test_phase_transition_focus_to_break():
     t = PomodoroTimer()
     t.start()
     # Simulate full focus duration
-    t.elapsed = PHASE_DURATIONS[Phase.FOCUS]
+    t.elapsed = DEFAULT_DURATIONS[Phase.FOCUS]
     t._last_tick = time.monotonic()
     transition = t.tick()
     assert transition is not None
@@ -84,7 +84,7 @@ def test_long_break_after_two_focus():
     t.start()
 
     # Focus 1 → Break (auto-start)
-    t.elapsed = PHASE_DURATIONS[Phase.FOCUS]
+    t.elapsed = DEFAULT_DURATIONS[Phase.FOCUS]
     t._last_tick = time.monotonic()
     tr1 = t.tick()
     assert tr1.next_phase == Phase.BREAK
@@ -92,7 +92,7 @@ def test_long_break_after_two_focus():
     assert t.focus_count == 1
 
     # Break → IDLE (need manual start for Focus 2)
-    t.elapsed = PHASE_DURATIONS[Phase.BREAK]
+    t.elapsed = DEFAULT_DURATIONS[Phase.BREAK]
     t._last_tick = time.monotonic()
     tr2 = t.tick()
     assert tr2.next_phase == Phase.FOCUS
@@ -104,7 +104,7 @@ def test_long_break_after_two_focus():
     assert t.focus_count == 1  # preserved from before
 
     # Focus 2 → Long Break (auto-start)
-    t.elapsed = PHASE_DURATIONS[Phase.FOCUS]
+    t.elapsed = DEFAULT_DURATIONS[Phase.FOCUS]
     t._last_tick = time.monotonic()
     tr3 = t.tick()
     assert tr3.next_phase == Phase.LONG_BREAK
@@ -178,9 +178,9 @@ def test_progress_property():
     t = PomodoroTimer()
     t.start()
     assert t.progress == 0.0
-    t.elapsed = PHASE_DURATIONS[Phase.FOCUS] / 2
+    t.elapsed = DEFAULT_DURATIONS[Phase.FOCUS] / 2
     assert abs(t.progress - 0.5) < 0.01
-    t.elapsed = PHASE_DURATIONS[Phase.FOCUS]
+    t.elapsed = DEFAULT_DURATIONS[Phase.FOCUS]
     assert t.progress == 1.0
 
 
@@ -196,7 +196,7 @@ def test_display_round_during_break():
     t = PomodoroTimer()
     t.start()
     # Advance to break
-    t.elapsed = PHASE_DURATIONS[Phase.FOCUS]
+    t.elapsed = DEFAULT_DURATIONS[Phase.FOCUS]
     t._last_tick = time.monotonic()
     t.tick()
     assert t.phase == Phase.BREAK
@@ -210,7 +210,7 @@ def test_full_cycle():
     phases = []
 
     for i in range(4):  # 4 phase transitions
-        t.elapsed = PHASE_DURATIONS[t.phase]
+        t.elapsed = DEFAULT_DURATIONS[t.phase]
         t._last_tick = time.monotonic()
         tr = t.tick()
         assert tr is not None

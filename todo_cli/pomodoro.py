@@ -20,7 +20,7 @@ class TimerState(Enum):
     PAUSED = "paused"
 
 
-PHASE_DURATIONS: dict[Phase, int] = {
+DEFAULT_DURATIONS: dict[Phase, int] = {
     Phase.FOCUS: 25 * 60,
     Phase.BREAK: 5 * 60,
     Phase.LONG_BREAK: 15 * 60,
@@ -52,17 +52,18 @@ class PhaseTransition:
 class PomodoroTimer:
     """Polling-based Pomodoro timer. Call tick() every ~1 second."""
 
-    def __init__(self) -> None:
+    def __init__(self, durations: dict[Phase, int] | None = None) -> None:
         self.state: TimerState = TimerState.IDLE
         self.phase: Phase = Phase.FOCUS
         self.focus_count: int = 0
         self.elapsed: float = 0.0
         self._last_tick: float = 0.0
         self._phase_start_iso: str = ""
+        self._durations: dict[Phase, int] = durations or dict(DEFAULT_DURATIONS)
 
     @property
     def duration(self) -> int:
-        return PHASE_DURATIONS[self.phase]
+        return self._durations[self.phase]
 
     @property
     def remaining(self) -> int:

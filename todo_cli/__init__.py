@@ -69,11 +69,27 @@ def main() -> None:
     if remote_url and not remote_url.startswith("https://"):
         print(f"Warning: remote URL is not HTTPS: {remote_url}", file=sys.stderr)
 
+    # Build pomodoro durations from config
+    cfg = _load_config()
+    pomo_durations = None
+    pomo_focus = cfg.get("pomo_focus")
+    pomo_break = cfg.get("pomo_break")
+    pomo_long_break = cfg.get("pomo_long_break")
+    if pomo_focus or pomo_break or pomo_long_break:
+        from .pomodoro import DEFAULT_DURATIONS, Phase
+        pomo_durations = dict(DEFAULT_DURATIONS)
+        if pomo_focus:
+            pomo_durations[Phase.FOCUS] = int(pomo_focus) * 60
+        if pomo_break:
+            pomo_durations[Phase.BREAK] = int(pomo_break) * 60
+        if pomo_long_break:
+            pomo_durations[Phase.LONG_BREAK] = int(pomo_long_break) * 60
+
     if not args.text and not args.list and args.toggle is None and args.desc is None:
         # TUI mode
         from .tui import run_tui
         try:
-            run_tui(remote_url=remote_url, remote_token=remote_token, db_path=args.db)
+            run_tui(remote_url=remote_url, remote_token=remote_token, db_path=args.db, pomo_durations=pomo_durations)
         except KeyboardInterrupt:
             pass
         return
