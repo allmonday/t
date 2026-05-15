@@ -63,6 +63,8 @@ def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int,
     time = format_time(todo.created)
     if todo.done:
         text = Text(style="dim")
+        if todo.pinned:
+            text.append("★ ", style="yellow bold")
         text.append(f"#{todo.id} ")
         text.append(todo.text, style="strike")
         if desc_count:
@@ -80,6 +82,8 @@ def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int,
                 text.append(f"  {done_time}", style="green italic")
     else:
         text = Text()
+        if todo.pinned:
+            text.append("★ ", style="yellow bold")
         text.append(f"#{todo.id} ", style="dim")
         text.append(todo.text)
         if desc_count:
@@ -413,6 +417,7 @@ class TodoApp(App):
         Binding("e", "edit_todo", "Edit"),
         Binding("i", "show_info", "Info"),
         Binding("space", "toggle_todo", "Toggle", priority=True),
+        Binding("s", "toggle_pin", "Pin", priority=True),
         Binding("r", "refresh", "Refresh"),
         Binding("h", "press_h", "Collapse", priority=True),
         Binding("left", "collapse_node", "Collapse", show=False, priority=True),
@@ -552,7 +557,39 @@ class TodoApp(App):
                 node_map[todo.id] = node
                 add_nodes(node, todo.id)
 
-        add_nodes(tree.root, None)
+        # 双区域：pinned 和 unpinned 根 todo 分开
+        roots = children_map.get(None, [])
+        pinned_roots = [t for t in roots if t.pinned]
+        unpinned_roots = [t for t in roots if not t.pinned]
+
+        if pinned_roots:
+            pinned_section = tree.root.add(
+                Text("★ Pinned TODO", style="bold yellow"),
+                data=None, expand=True,
+            )
+            for todo in pinned_roots:
+                has_children = todo.id in children_map
+                label = _render_label(todo, is_leaf=not has_children, desc_count=desc_counts.get(todo.id), bot_running=self._bot_running)
+                if has_children:
+                    node = pinned_section.add(label, data=todo.id, expand=(todo.id in expanded_ids))
+                else:
+                    node = pinned_section.add_leaf(label, data=todo.id)
+                node_map[todo.id] = node
+                add_nodes(node, todo.id)
+
+        todo_section = tree.root.add(
+            Text("TODO", style="bold cyan"),
+            data=None, expand=True,
+        )
+        for todo in unpinned_roots:
+            has_children = todo.id in children_map
+            label = _render_label(todo, is_leaf=not has_children, desc_count=desc_counts.get(todo.id), bot_running=self._bot_running)
+            if has_children:
+                node = todo_section.add(label, data=todo.id, expand=(todo.id in expanded_ids))
+            else:
+                node = todo_section.add_leaf(label, data=todo.id)
+            node_map[todo.id] = node
+            add_nodes(node, todo.id)
 
         # restore cursor
         if select_id and select_id in node_map:
@@ -679,6 +716,25 @@ class TodoApp(App):
             return
         await self.client.toggle(todo_id)
         await self._update_labels()
+
+    async def _toggle_pin(self, todo_id: int) -> None:
+        todo = await self.client.get(todo_id)
+        if not todo:
+            return
+        if todo.parent is not None:
+            self.notify("Only root todos can be pinned", severity="warning")
+            return
+        try:
+            await self.client.toggle_pin(todo_id)
+        except Exception:
+            self.notify("Failed to toggle pin", severity="error")
+        await self._refresh_tree(select_id=todo_id)
+
+    async def action_toggle_pin(self) -> None:
+        todo_id = self._get_selected_todo_id()
+        if todo_id is None:
+            return
+        self.run_worker(self._toggle_pin(todo_id))
 
     def action_collapse_node(self) -> None:
         tree = self.query_one(TodoTree)

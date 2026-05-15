@@ -142,6 +142,11 @@ class TodoClient:
         _handle_error(r)
         return r.json()["success"]
 
+    async def toggle_pin(self, todo_id: int) -> bool:
+        r = await self._client.put(f"/api/todos/{todo_id}/pin")
+        _handle_error(r)
+        return r.json()["success"]
+
     async def delete(self, todo_id: int) -> int:
         r = await self._client.delete(f"/api/todos/{todo_id}")
         _handle_error(r)

@@ -20,7 +20,7 @@ class TodoStore:
             stmt = (
                 select(TodoORM)
                 .where(TodoORM.deleted_at.is_(None))
-                .order_by(TodoORM.id)
+                .order_by(TodoORM.pinned.desc(), TodoORM.id)
             )
             rows = (await session.scalars(stmt)).all()
             return [TodoEntity.model_validate(r) for r in rows]
@@ -33,7 +33,7 @@ class TodoStore:
             )
             if filter_done is not None:
                 stmt = stmt.where(TodoORM.done == int(filter_done))
-            stmt = stmt.order_by(TodoORM.id)
+            stmt = stmt.order_by(TodoORM.pinned.desc(), TodoORM.id)
             rows = (await session.scalars(stmt)).all()
             return [TodoEntity.model_validate(r) for r in rows]
 
@@ -109,6 +109,7 @@ class TodoStore:
             session.add(orm)
             await session.flush()
             await self._log_audit(session, "add", orm.id, {"text": text, "parent": parent_id})
+            await self._bubble_up(session, orm.id)
             await session.commit()
             return TodoEntity.model_validate(orm)
 
@@ -153,6 +154,18 @@ class TodoStore:
             await self._log_audit(session, "toggle", todo_id, {"done": new_done})
             await session.flush()
             await self._bubble_up(session, todo_id)
+            await session.commit()
+            return True
+
+    async def toggle_pin(self, todo_id: int) -> bool:
+        async with self.session_factory() as session:
+            row = await session.get(TodoORM, todo_id)
+            if not row or row.deleted_at is not None:
+                return False
+            if row.parent is not None:
+                raise ValueError("Only root todos can be pinned")
+            row.pinned = int(not bool(row.pinned))
+            await self._log_audit(session, "toggle_pin", todo_id, {"pinned": bool(row.pinned)})
             await session.commit()
             return True
 

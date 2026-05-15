@@ -91,6 +91,16 @@ async def toggle_todo(todo_id: int, request: Request):
     return TodoToggleResponse(success=success)
 
 
+@router.put("/todos/{todo_id}/pin", response_model=TodoToggleResponse)
+async def toggle_pin(todo_id: int, request: Request):
+    store = _get_store(request)
+    try:
+        success = await store.toggle_pin(todo_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return TodoToggleResponse(success=success)
+
+
 @router.delete("/todos/{todo_id}", response_model=TodoDeleteResponse)
 async def delete_todo(todo_id: int, request: Request):
     store = _get_store(request)

@@ -143,6 +143,36 @@ class TestBubbleUp:
         assert (await store.get(root.id)).done is True
 
 
+class TestAddResetAncestors:
+    """在已完成的 todo 下新建子 todo 时，祖先应回溯为 pending。"""
+
+    async def test_add_child_resets_done_parent(self, store: TodoStore):
+        parent = await store.add("父")
+        child = await store.add("子", parent_id=parent.id)
+        await store.toggle(child.id)
+        assert (await store.get(parent.id)).done is True
+        await store.add("新子", parent_id=parent.id)
+        assert (await store.get(parent.id)).done is False
+        assert (await store.get(parent.id)).done_at is None
+
+    async def test_add_resets_all_ancestors(self, store: TodoStore):
+        root = await store.add("祖父")
+        mid = await store.add("父", parent_id=root.id)
+        leaf = await store.add("叶", parent_id=mid.id)
+        await store.toggle(leaf.id)
+        assert (await store.get(mid.id)).done is True
+        assert (await store.get(root.id)).done is True
+        await store.add("新叶", parent_id=mid.id)
+        assert (await store.get(mid.id)).done is False
+        assert (await store.get(root.id)).done is False
+
+    async def test_add_under_pending_parent_no_change(self, store: TodoStore):
+        parent = await store.add("父")
+        assert (await store.get(parent.id)).done is False
+        await store.add("子", parent_id=parent.id)
+        assert (await store.get(parent.id)).done is False
+
+
 # ── delete ──
 
 
@@ -232,3 +262,52 @@ class TestPomodoroStore:
         )
         assert session.completed is False
         assert session.duration_seconds == 300
+
+
+# ── toggle_pin ──
+
+
+class TestTogglePin:
+    async def test_pin_root(self, store: TodoStore):
+        todo = await store.add("根任务")
+        assert await store.toggle_pin(todo.id) is True
+        updated = await store.get(todo.id)
+        assert updated.pinned is True
+
+    async def test_unpin(self, store: TodoStore):
+        todo = await store.add("根任务")
+        await store.toggle_pin(todo.id)
+        assert await store.toggle_pin(todo.id) is True
+        updated = await store.get(todo.id)
+        assert updated.pinned is False
+
+    async def test_pin_order(self, store: TodoStore):
+        a = await store.add("普通A")
+        b = await store.add("普通B")
+        c = await store.add("普通C")
+        await store.toggle_pin(b.id)
+        roots = await store.list_roots()
+        ids = [t.id for t in roots]
+        assert ids == [b.id, a.id, c.id]
+
+    async def test_pin_child_fails(self, store: TodoStore):
+        import pytest
+        parent = await store.add("父")
+        child = await store.add("子", parent_id=parent.id)
+        with pytest.raises(ValueError, match="Only root"):
+            await store.toggle_pin(child.id)
+
+    async def test_nonexistent(self, store: TodoStore):
+        assert await store.toggle_pin(999) is False
+
+    async def test_pin_list_active_order(self, store: TodoStore):
+        a = await store.add("普通A")
+        b = await store.add("普通B")
+        c = await store.add("普通C")
+        child = await store.add("子", parent_id=b.id)
+        await store.toggle_pin(c.id)
+        items = await store.list_active()
+        # pinned c 应该排在最前面，子任务跟随其父
+        assert items[0].id == c.id
+        assert items[1].id == a.id
+        assert items[2].id == b.id

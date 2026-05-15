@@ -22,6 +22,7 @@ class TodoORM(Base):
     desc = Column(Text, nullable=True)
     done = Column(Integer, nullable=False, default=0)
     parent = Column(Integer, ForeignKey("todos.id"), nullable=True)
+    pinned = Column(Integer, nullable=False, default=0)
     created = Column(Text, nullable=False)
     done_at = Column(Text, nullable=True)
     deleted_at = Column(Text, nullable=True)
@@ -57,6 +58,7 @@ class TodoEntity(BaseModel):
     desc: Optional[str] = None
     done: bool = False
     parent: Optional[int] = None
+    pinned: bool = False
     created: str = ""
     done_at: Optional[str] = None
     deleted_at: Optional[str] = None

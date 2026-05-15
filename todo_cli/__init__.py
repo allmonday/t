@@ -25,8 +25,12 @@ def _load_config() -> dict:
 
 def _get_remote_config(args_url=None, args_token=None):
     cfg = _load_config()
-    url = args_url or os.environ.get("TODO_REMOTE_URL") or cfg.get("remote")
-    token = args_token or os.environ.get("TODO_REMOTE_TOKEN") or cfg.get("token")
+    url = args_url if args_url is not None else (os.environ.get("TODO_REMOTE_URL") or cfg.get("remote"))
+    token = args_token if args_token is not None else (os.environ.get("TODO_REMOTE_TOKEN") or cfg.get("token"))
+    if url == "":
+        url = None
+    if token == "":
+        token = None
     return url, token
 
 

@@ -105,6 +105,9 @@ uv run alembic upgrade head
 # 使用开发数据库运行
 TODO_DB=dev.db uv run t
 
+# 使用开发数据库运行（忽略 ~/.todoiumrc 中的 remote 配置）
+TODO_DB=dev.db uv run t --remote ""
+
 # 运行测试
 uv run pytest
 
