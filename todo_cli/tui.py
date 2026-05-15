@@ -726,8 +726,8 @@ class TodoApp(App):
             return
         try:
             await self.client.toggle_pin(todo_id)
-        except Exception:
-            self.notify("Failed to toggle pin", severity="error")
+        except Exception as e:
+            self.notify(f"Failed to toggle pin: {e}", severity="error")
         await self._refresh_tree(select_id=todo_id)
 
     async def action_toggle_pin(self) -> None:
