@@ -1,6 +1,6 @@
 [project]
 name = "todoium"
-version = "0.3.0"
+version = "0.3.1"
 authors = [{ name = "tangkikodo", email = "allmonday@126.com" }]
 requires-python = ">=3.10"
 dependencies = [

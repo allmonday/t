@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- 修复 ModalScreen 中快捷键被 App 层 priority 绑定拦截的问题（override `_check_bindings`，让 priority 绑定也尊重 modal 边界）
+- Pin 快捷键从 `s` 改为 `p`
+
 ## 0.3.0
 
 - 新增 Pin 功能：按 `s` 键可置顶根级别 todo，被 pin 的 todo 显示 ★ 标记

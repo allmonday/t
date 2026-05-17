@@ -106,7 +106,7 @@ def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int,
 class InputScreen(ModalScreen[str]):
     """底部弹出输入框。"""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
     def __init__(self, prompt: str = "New todo", default: str = "") -> None:
         super().__init__()
@@ -144,9 +144,9 @@ class ConfirmScreen(ModalScreen[bool]):
     """确认对话框。"""
 
     BINDINGS = [
-        Binding("y", "yes", "Yes"),
-        Binding("n", "no", "No"),
-        Binding("escape", "no", "Cancel"),
+        Binding("y", "yes", "Yes", priority=True),
+        Binding("n", "no", "No", priority=True),
+        Binding("escape", "no", "Cancel", priority=True),
     ]
 
     def __init__(self, message: str) -> None:
@@ -167,9 +167,9 @@ class InfoScreen(ModalScreen[str | None]):
     """只读信息弹窗，按任意键关闭。"""
 
     BINDINGS = [
-        Binding("escape", "close", "Close"),
-        Binding("i", "close", "Close"),
-        Binding("b", "dispatch", "Bot"),
+        Binding("escape", "close", "Close", priority=True),
+        Binding("i", "close", "Close", priority=True),
+        Binding("b", "dispatch", "Bot", priority=True),
     ]
 
     def __init__(self, title: str, body: str) -> None:
@@ -280,13 +280,13 @@ class PomodoroMenuScreen(ModalScreen[str]):
     """Pomodoro control menu."""
 
     BINDINGS = [
-        Binding("escape", "cancel", "Cancel"),
-        Binding("s", "select_start", "Start"),
-        Binding("p", "select_pause", "Pause"),
-        Binding("c", "select_resume", "Continue"),
-        Binding("n", "select_skip", "Next"),
-        Binding("x", "select_reset", "Reset"),
-        Binding("o", "select_history", "History"),
+        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("s", "select_start", "Start", priority=True),
+        Binding("p", "select_pause", "Pause", priority=True),
+        Binding("c", "select_resume", "Continue", priority=True),
+        Binding("n", "select_skip", "Next", priority=True),
+        Binding("x", "select_reset", "Reset", priority=True),
+        Binding("o", "select_history", "History", priority=True),
     ]
 
     def __init__(self, timer_state: TimerState) -> None:
@@ -417,7 +417,7 @@ class TodoApp(App):
         Binding("e", "edit_todo", "Edit"),
         Binding("i", "show_info", "Info"),
         Binding("space", "toggle_todo", "Toggle", priority=True),
-        Binding("s", "toggle_pin", "Pin", priority=True),
+        Binding("p", "toggle_pin", "Pin", priority=True),
         Binding("r", "refresh", "Refresh"),
         Binding("h", "press_h", "Collapse", priority=True),
         Binding("left", "collapse_node", "Collapse", show=False, priority=True),
@@ -431,6 +431,23 @@ class TodoApp(App):
         Binding("P", "pomodoro_menu", "Pomo"),
         Binding("q", "quit", "Quit"),
     ]
+
+    async def _check_bindings(self, key: str, priority: bool = False) -> bool:
+        """Override: priority bindings also respect modal boundary.
+
+        Textual's default checks ``reversed(_binding_chain)`` for priority
+        bindings which always includes the App — even when a ModalScreen is
+        active.  By using ``_modal_binding_chain`` instead, App-level
+        priority bindings are automatically excluded whenever a modal dialog
+        is open, so dialog bindings always win.
+        """
+        for namespace, bindings in reversed(self.screen._modal_binding_chain):
+            key_bindings = bindings.key_to_bindings.get(key, ())
+            for binding in key_bindings:
+                if binding.priority == priority:
+                    if await self.run_action(binding.action, namespace):
+                        return True
+        return False
 
     _UI_STATE_PATH = os.path.expanduser("~/.todo_ui_state.json")
     _THEMES = [
