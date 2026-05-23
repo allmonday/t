@@ -708,7 +708,14 @@ class TodoApp(App):
         tree.select_node(target)
         tree.scroll_to_node(target)
 
+    def _modal_active(self) -> bool:
+        """Check if any ModalScreen is currently active."""
+        from textual.screen import ModalScreen
+        return any(isinstance(s, ModalScreen) for s in self.screen_stack)
+
     async def action_goto_id(self) -> None:
+        if self._modal_active():
+            return
         self.run_worker(self._goto_id())
 
     async def action_toggle_todo(self) -> None:
@@ -830,6 +837,8 @@ class TodoApp(App):
             await self._refresh_tree(select_id=new_todo.id)
 
     async def action_add_sibling(self) -> None:
+        if self._modal_active():
+            return
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             self.run_worker(self._add_root())
@@ -843,6 +852,8 @@ class TodoApp(App):
             await self._refresh_tree(select_id=todo.id)
 
     async def action_add_root(self) -> None:
+        if self._modal_active():
+            return
         self.run_worker(self._add_root())
 
     async def _add_child(self, todo_id: int) -> None:
@@ -854,6 +865,8 @@ class TodoApp(App):
             await self._refresh_tree(select_id=new_todo.id, force_expand={todo_id})
 
     async def action_add_child(self) -> None:
+        if self._modal_active():
+            return
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             self.run_worker(self._add_root())
@@ -864,15 +877,14 @@ class TodoApp(App):
         todo = await self.client.get(todo_id)
         if not todo:
             return
-        new_text = await self.push_screen_wait(InputScreen(f"Edit #{todo_id} text", default=todo.text))
+        new_text = await self.push_screen_wait(InputScreen(f"Edit #{todo_id}", default=todo.text))
         if new_text and new_text != todo.text:
             await self.client.update_text(todo_id, new_text)
-        new_desc = await self.push_screen_wait(InputScreen(f"Edit #{todo_id} desc", default=todo.desc or ""))
-        if new_desc and new_desc != (todo.desc or ""):
-            await self.client.update_desc(todo_id, new_desc)
         await self._update_labels()
 
     async def action_edit_todo(self) -> None:
+        if self._modal_active():
+            return
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             return
@@ -889,6 +901,8 @@ class TodoApp(App):
             self.run_worker(self._dispatch_claude(todo_id))
 
     async def action_show_info(self) -> None:
+        if self._modal_active():
+            return
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             return
@@ -952,6 +966,8 @@ class TodoApp(App):
             await self._refresh_tree(select_id=select_id)
 
     async def action_delete_todo(self) -> None:
+        if self._modal_active():
+            return
         todo_id = self._get_selected_todo_id()
         if todo_id is None:
             return
@@ -1107,6 +1123,8 @@ class TodoApp(App):
         await self.push_screen_wait(InfoScreen("\U0001f345 Pomodoro History", body))
 
     async def action_pomodoro_menu(self) -> None:
+        if self._modal_active():
+            return
         self.run_worker(self._pomodoro_menu())
 
 
