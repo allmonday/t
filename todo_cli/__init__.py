@@ -102,16 +102,23 @@ def main() -> None:
     from .cli import CliError, console
 
     async def async_main():
-        from .client import TodoClient
-        from .server.runner import start_embedded_server
-
         if remote_url:
-            base_url = remote_url
-            token = remote_token or ""
+            # Remote mode: connect via WebSocket
+            from .ws_client import RemoteClient
+            ws_url = remote_url.replace("http://", "ws://").replace("https://", "wss://")
+            if not ws_url.endswith("/ws"):
+                ws_url = ws_url.rstrip("/") + "/ws"
+            client = RemoteClient(ws_url, api_token=remote_token)
+            await client.connect()
         else:
-            base_url, token = start_embedded_server(db_path=args.db)
+            # Local mode: direct store access
+            from .db import create_engine_and_session, init_db, seed_if_empty
+            from .direct_client import DirectClient
+            engine, session_factory = create_engine_and_session(args.db)
+            await init_db(engine)
+            await seed_if_empty(session_factory)
+            client = DirectClient(session_factory)
 
-        client = TodoClient(base_url, api_token=token if token else None)
         try:
             if args.text:
                 from .cli import cli_add

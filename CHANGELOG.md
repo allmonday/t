@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- REST API 完全替换为 WebSocket 协议，支持多客户端实时同步和服务端推送
+- 本地模式：DirectClient 直接调用 TodoStore，零网络开销，不再启动 embedded server
+- 远程模式：RemoteClient 通过 WebSocket 连接远程 server，支持广播变更通知
+- 移除 REST 路由文件（routes_todo.py、routes_pomodoro.py、schemas.py、client.py、runner.py）
+- Pinned 和普通 TODO 合并为同一列表显示，pinned 排前面（★ 标记区分）
+- 修复：失败的 mutation 不再触发跨客户端广播
+- 修复：WebSocket 断连后 pending 请求立即失败，不再等到超时
+- 修复：broadcast 遍历连接表时快照防并发修改
+- 修复：请求字段缺失返回 `bad_request` 而非 `internal_error`
+
 ## 0.3.1
 
 - 修复 ModalScreen 中快捷键被 App 层 priority 绑定拦截的问题（override `_check_bindings`，让 priority 绑定也尊重 modal 边界）

@@ -14,8 +14,9 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
-from .client import TodoClient, TodoClientError
+from .direct_client import DirectClient
 from .models import TodoEntity
+from .ws_client import RemoteClient, ClientError as WsClientError
 from .pomodoro import DEFAULT_DURATIONS, PHASE_LABELS, Phase, PhaseTransition, PomodoroTimer, TimerState
 from .tree import build_children_map, count_descendants, filter_todos, format_time
 
@@ -457,7 +458,7 @@ class TodoApp(App):
         "nord",
     ]
 
-    def __init__(self, client: TodoClient, pomo_durations: dict[Phase, int] | None = None) -> None:
+    def __init__(self, client: DirectClient | RemoteClient, pomo_durations: dict[Phase, int] | None = None) -> None:
         super().__init__()
         self.client = client
         self._filter_labels = ["All", "Pending"]
@@ -483,6 +484,10 @@ class TodoApp(App):
     async def on_mount(self) -> None:
         self.theme = self._saved_theme
         self._update_header()
+        # Remote mode: connect WebSocket and register broadcast handler
+        if isinstance(self.client, RemoteClient):
+            await self.client.connect()
+            self.client.set_broadcast_handler(self._on_remote_change)
         await self._refresh_tree(force_expand=self._saved_expanded)
         self.set_interval(1.0, self._pomodoro_tick)
 
@@ -492,6 +497,11 @@ class TodoApp(App):
         stale_label = "hidden" if self._hide_stale else "shown"
         self.sub_title = f"Filter: {label}  |  Archived: {stale_label}"
         self.query_one("#status-bar", Static).update(f"Theme: {self.theme}")
+
+    def _on_remote_change(self, broadcast: dict) -> None:
+        """Called when another client makes a change. Schedule a refresh."""
+        selected = self._get_selected_todo_id()
+        self.run_worker(self._refresh_tree(select_id=selected))
 
     def _load_ui_state(self) -> dict:
         try:
@@ -574,37 +584,14 @@ class TodoApp(App):
                 node_map[todo.id] = node
                 add_nodes(node, todo.id)
 
-        # 双区域：pinned 和 unpinned 根 todo 分开
         roots = children_map.get(None, [])
-        pinned_roots = [t for t in roots if t.pinned]
-        unpinned_roots = [t for t in roots if not t.pinned]
-
-        if pinned_roots:
-            pinned_section = tree.root.add(
-                Text("★ Pinned TODO", style="bold yellow"),
-                data=None, expand=True,
-            )
-            for todo in pinned_roots:
-                has_children = todo.id in children_map
-                label = _render_label(todo, is_leaf=not has_children, desc_count=desc_counts.get(todo.id), bot_running=self._bot_running)
-                if has_children:
-                    node = pinned_section.add(label, data=todo.id, expand=(todo.id in expanded_ids))
-                else:
-                    node = pinned_section.add_leaf(label, data=todo.id)
-                node_map[todo.id] = node
-                add_nodes(node, todo.id)
-
-        todo_section = tree.root.add(
-            Text("TODO", style="bold cyan"),
-            data=None, expand=True,
-        )
-        for todo in unpinned_roots:
+        for todo in roots:
             has_children = todo.id in children_map
             label = _render_label(todo, is_leaf=not has_children, desc_count=desc_counts.get(todo.id), bot_running=self._bot_running)
             if has_children:
-                node = todo_section.add(label, data=todo.id, expand=(todo.id in expanded_ids))
+                node = tree.root.add(label, data=todo.id, expand=(todo.id in expanded_ids))
             else:
-                node = todo_section.add_leaf(label, data=todo.id)
+                node = tree.root.add_leaf(label, data=todo.id)
             node_map[todo.id] = node
             add_nodes(node, todo.id)
 
@@ -1010,7 +997,7 @@ class TodoApp(App):
                         duration_seconds=transition.duration_seconds,
                         completed=transition.completed,
                     )
-                except TodoClientError:
+                except WsClientError:
                     pass
             self._send_pomodoro_notification(transition)
             self.run_worker(self._pomodoro_complete(transition))
@@ -1086,7 +1073,7 @@ class TodoApp(App):
                         duration_seconds=transition.duration_seconds,
                         completed=transition.completed,
                     )
-                except TodoClientError:
+                except WsClientError:
                     pass
                 self._send_pomodoro_notification(transition)
         elif action == "reset":
@@ -1100,7 +1087,7 @@ class TodoApp(App):
     async def _show_pomodoro_history(self) -> None:
         try:
             sessions = await self.client.pomodoro.today_sessions()
-        except TodoClientError:
+        except WsClientError:
             self.notify("Failed to load pomodoro history", severity="error")
             return
         if not sessions:
@@ -1130,16 +1117,25 @@ def run_tui(
     pomo_durations: dict[Phase, int] | None = None,
 ) -> None:
     """TUI entry point. Textual manages the event loop."""
-    from .client import TodoClient
-    from .server.runner import start_embedded_server
-
     if remote_url:
-        base_url = remote_url
-        token = remote_token or ""
+        # Remote mode: connect via WebSocket
+        ws_url = remote_url.replace("http://", "ws://").replace("https://", "wss://")
+        if not ws_url.endswith("/ws"):
+            ws_url = ws_url.rstrip("/") + "/ws"
+        client: DirectClient | RemoteClient = RemoteClient(ws_url, api_token=remote_token)
     else:
-        base_url, token = start_embedded_server(db_path=db_path)
+        # Local mode: direct store access, no server
+        from .db import create_engine_and_session, init_db, seed_if_empty
 
-    client = TodoClient(base_url, api_token=token if token else None)
+        async def _init_db():
+            engine, session_factory = create_engine_and_session(db_path)
+            await init_db(engine)
+            await seed_if_empty(session_factory)
+            return session_factory
+
+        session_factory = asyncio.run(_init_db())
+        client = DirectClient(session_factory)
+
     app = TodoApp(client, pomo_durations=pomo_durations)
     try:
         app.run()

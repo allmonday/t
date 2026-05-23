@@ -4,12 +4,12 @@ from __future__ import annotations
 import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Query, WebSocket
 
 from ..db import create_engine_and_session, init_db, seed_if_empty
 from .auth import set_api_token
-from .routes_pomodoro import router as pomodoro_router
-from .routes_todo import router as todo_router
+from .connection_manager import ConnectionManager
+from .ws_handler import websocket_endpoint
 
 
 @asynccontextmanager
@@ -43,8 +43,14 @@ def create_app(
     app.state.engine = engine
     app.state.session_factory = session_factory
 
-    app.include_router(todo_router, prefix="/api")
-    app.include_router(pomodoro_router, prefix="/api")
+    manager = ConnectionManager()
+    app.state.connection_manager = manager
+
+    @app.websocket("/ws")
+    async def ws(websocket: WebSocket, token: str | None = Query(default=None)):
+        await websocket_endpoint(
+            websocket, manager, session_factory, token=token,
+        )
 
     @app.get("/api/health")
     async def health():
