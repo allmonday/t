@@ -49,7 +49,11 @@ class _WSClient:
             sep = "&" if "?" in url else "?"
             url = f"{url}{sep}token={self._token}"
 
-        self._ws = await websockets.connect(url, proxy=None)
+        # Bypass proxy for local connections to avoid SOCKS proxy issues
+        from urllib.parse import urlparse
+        host = urlparse(url).hostname
+        kwargs = {"proxy": None} if host in ("127.0.0.1", "localhost", "::1") else {}
+        self._ws = await websockets.connect(url, **kwargs)
         self._connected = True
         self._listener_task = asyncio.create_task(self._listener())
 
