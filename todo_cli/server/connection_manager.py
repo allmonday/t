@@ -27,8 +27,6 @@ class ConnectionManager:
             if conn_id == exclude:
                 continue
             try:
-                from fastapi.encoders import jsonable_encoder
-                import json
                 await ws.send_json(message)
             except Exception:
                 logger.debug("Failed to send to %s, marking disconnected", conn_id)

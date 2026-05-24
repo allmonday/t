@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from todo_cli.tui import TodoApp, TodoTree
+from rich.text import Text
+
+from todo_cli.models import TodoEntity
+from todo_cli.tui import TodoApp, TodoTree, _render_label
 
 
 @pytest.fixture
@@ -47,7 +50,7 @@ async def test_add_root_cursor_on_new_todo(store):
     app = TodoApp(store)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await pilot.press("a")
+        await pilot.press("o")
         await _type_and_submit(pilot, "new root")
         await pilot.pause()
 
@@ -73,7 +76,7 @@ async def test_add_sibling_of_child(store):
         await pilot.press("j")
         assert _cursor_todo_id(app) == child.id
 
-        await pilot.press("a")
+        await pilot.press("o")
         await _type_and_submit(pilot, "child2")
         await pilot.pause()
 
@@ -95,7 +98,7 @@ async def test_add_child_under_root(store):
         await pilot.press("j")
         assert _cursor_todo_id(app) == root.id
 
-        await pilot.press("tab")
+        await pilot.press("O")
         await _type_and_submit(pilot, "sub")
         await pilot.pause()
 
@@ -117,7 +120,7 @@ async def test_add_child_consecutive_keeps_expanded(store):
         await pilot.press("j")
         assert _cursor_todo_id(app) == root.id
 
-        await pilot.press("tab")
+        await pilot.press("O")
         await _type_and_submit(pilot, "c1")
         await pilot.pause()
 
@@ -129,7 +132,7 @@ async def test_add_child_consecutive_keeps_expanded(store):
         await pilot.press("k")
         assert _cursor_todo_id(app) == root.id
 
-        await pilot.press("tab")
+        await pilot.press("O")
         await _type_and_submit(pilot, "c2")
         await pilot.pause()
 
@@ -194,3 +197,103 @@ async def test_toggle_preserves_cursor(store):
 
         assert _cursor_todo_id(app) == child.id
         assert (await store.get(child.id)).done is True
+
+
+# ── _render_label ──
+
+
+def _make_todo(
+    id: int = 1,
+    text: str = "task",
+    done: bool = False,
+    pinned: bool = False,
+    parent: int | None = None,
+    desc: str | None = None,
+    created: str = "2026-01-01T00:00:00",
+    done_at: str | None = None,
+) -> TodoEntity:
+    return TodoEntity(
+        id=id, text=text, desc=desc, done=done, pinned=pinned,
+        parent=parent, created=created, done_at=done_at,
+    )
+
+
+class TestRenderLabel:
+    def test_basic_undone(self):
+        todo = _make_todo()
+        label = _render_label(todo)
+        assert "task" in label.plain
+        assert "#1" in label.plain
+
+    def test_done_shows_strike(self):
+        todo = _make_todo(done=True)
+        label = _render_label(todo)
+        assert "task" in label.plain
+        # done 应包含 strike style
+        styles = [s.style for s in label.spans]
+        assert any("strike" in str(s) for s in styles)
+
+    def test_undone_no_strike(self):
+        todo = _make_todo(done=False)
+        label = _render_label(todo)
+        styles = [s.style for s in label.spans]
+        assert not any("strike" in str(s) for s in styles)
+
+    def test_pinned_shows_star(self):
+        todo = _make_todo(pinned=True)
+        label = _render_label(todo)
+        assert "★" in label.plain
+
+    def test_not_pinned_no_star(self):
+        todo = _make_todo(pinned=False)
+        label = _render_label(todo)
+        assert "★" not in label.plain
+
+    def test_desc_shows_info_icon(self):
+        todo = _make_todo(desc="some description")
+        label = _render_label(todo)
+        assert "\u2139" in label.plain
+
+    def test_no_desc_no_info_icon(self):
+        todo = _make_todo()
+        label = _render_label(todo)
+        assert "\u2139" not in label.plain
+
+    def test_desc_count(self):
+        todo = _make_todo()
+        label = _render_label(todo, desc_count=(2, 5))
+        assert "[2/5]" in label.plain
+
+    def test_no_desc_count(self):
+        todo = _make_todo()
+        label = _render_label(todo)
+        assert "[" not in label.plain
+
+    def test_done_time_shown_when_done(self):
+        todo = _make_todo(done=True, done_at="2026-01-01T10:00:00")
+        label = _render_label(todo)
+        # done_at should produce a time string (exact format depends on format_time)
+        plain = label.plain
+        # the done_time is rendered after the todo content
+        assert len(plain) > len("task #1")
+
+    def test_done_pinned_with_desc_and_count(self):
+        """组合场景：done + pinned + desc + desc_count。"""
+        todo = _make_todo(done=True, pinned=True, desc="details")
+        label = _render_label(todo, desc_count=(1, 3))
+        plain = label.plain
+        assert "★" in plain
+        assert "task" in plain
+        assert "\u2139" in plain
+        assert "[1/3]" in plain
+
+    def test_bot_running_shows_emoji(self):
+        todo = _make_todo()
+        label = _render_label(todo, bot_running={1})
+        assert "💭" in label.plain
+
+    def test_bot_desc_shows_robot(self):
+        from todo_cli.tui import BOT_DIVIDER
+        todo = _make_todo(desc=f"some text{BOT_DIVIDER}response")
+        label = _render_label(todo)
+        assert "🤖" in label.plain

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+- 快捷键调整：`a` 根任务、`o` 同级任务、`O` 子任务（原 `Tab`/`a`/`A`）
+- desc 预览面板和 `i` 详情弹窗改为 Markdown 渲染
+- Server：提取错误响应辅助函数，删除未使用代码
+- TUI：合并 `_render_label` 重复分支，简化树构建逻辑，提取 pomodoro 去重方法和常量
+- 新增 `_render_label` 单元测试（13 个）
+
 ## 0.6.0
 
 - 新增两个 light 主题：catppuccin-latte、solarized-light

@@ -155,6 +155,13 @@ class _BadRequestError(Exception):
     pass
 
 
+async def _send_error(websocket: WebSocket, req_id: str, error: str, error_code: str) -> None:
+    await websocket.send_json({
+        "type": "response", "req_id": req_id, "ok": False,
+        "error": error, "error_code": error_code,
+    })
+
+
 # ── main WebSocket endpoint ──
 
 async def websocket_endpoint(
@@ -180,10 +187,7 @@ async def websocket_endpoint(
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
-                await websocket.send_json({
-                    "type": "response", "req_id": "", "ok": False,
-                    "error": "Invalid JSON", "error_code": "invalid_json",
-                })
+                await _send_error(websocket, "", "Invalid JSON", "invalid_json")
                 continue
 
             req_id = msg.get("req_id", "")
@@ -192,10 +196,7 @@ async def websocket_endpoint(
 
             handler = _HANDLERS.get(msg_type)
             if handler is None:
-                await websocket.send_json({
-                    "type": "response", "req_id": req_id, "ok": False,
-                    "error": f"Unknown type: {msg_type}", "error_code": "unknown_type",
-                })
+                await _send_error(websocket, req_id, f"Unknown type: {msg_type}", "unknown_type")
                 continue
 
             # dispatch
@@ -218,26 +219,14 @@ async def websocket_endpoint(
                         "data": {"mutation": msg_type},
                     }, exclude=conn_id)
             except _NotFoundError:
-                await websocket.send_json({
-                    "type": "response", "req_id": req_id, "ok": False,
-                    "error": "Not found", "error_code": "not_found",
-                })
+                await _send_error(websocket, req_id, "Not found", "not_found")
             except _BadRequestError as e:
-                await websocket.send_json({
-                    "type": "response", "req_id": req_id, "ok": False,
-                    "error": str(e), "error_code": "bad_request",
-                })
+                await _send_error(websocket, req_id, str(e), "bad_request")
             except (KeyError, TypeError) as e:
-                await websocket.send_json({
-                    "type": "response", "req_id": req_id, "ok": False,
-                    "error": f"Missing or invalid field: {e}", "error_code": "bad_request",
-                })
+                await _send_error(websocket, req_id, f"Missing or invalid field: {e}", "bad_request")
             except Exception:
                 logger.exception("Error handling %s", msg_type)
-                await websocket.send_json({
-                    "type": "response", "req_id": req_id, "ok": False,
-                    "error": "Internal error", "error_code": "internal_error",
-                })
+                await _send_error(websocket, req_id, "Internal error", "internal_error")
 
     except WebSocketDisconnect:
         pass

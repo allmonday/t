@@ -12,7 +12,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.containers import ScrollableContainer
-from textual.widgets import Footer, Header, Input, Label, Static, Tree
+from textual.widgets import Footer, Header, Input, Label, Markdown, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from .direct_client import DirectClient
@@ -25,6 +25,18 @@ from .tree import build_children_map, count_descendants, filter_todos, format_ti
 # ── constants ──
 
 BOT_DIVIDER = "\n---\n🤖 bot:\n"
+
+_PHASE_COMPLETE_TITLES: dict[Phase, str] = {
+    Phase.FOCUS: "Focus session complete!",
+    Phase.BREAK: "Break is over!",
+    Phase.LONG_BREAK: "Long break is over!",
+}
+
+_PHASE_NEXT_LABELS: dict[Phase, str] = {
+    Phase.FOCUS: "Time to focus",
+    Phase.BREAK: "Take a short break",
+    Phase.LONG_BREAK: "Take a long break",
+}
 
 # ── helpers ──
 
@@ -62,43 +74,24 @@ class TodoTree(Tree[int]):
 
 
 def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int, int] | None = None, bot_running: set[int] | None = None) -> Text:
-    time = format_time(todo.created)
-    if todo.done:
-        text = Text(style="dim")
-        if todo.pinned:
-            text.append("★ ", style="yellow bold")
-        text.append(todo.text, style="strike")
-        text.append(f" #{todo.id}", style="dim")
-        if desc_count:
-            done, total = desc_count
-            text.append(f" [{done}/{total}]", style="dim italic")
-        if todo.desc:
-            text.append(" \u2139", style="dim")
-        if bot_running and todo.id in bot_running:
-            text.append(" 💭")
-        elif todo.desc and BOT_DIVIDER in todo.desc:
-            text.append(" 🤖")
-        if todo.done_at:
-            done_time = format_time(todo.done_at)
-            if done_time:
-                text.append(f"  {done_time}", style="green italic")
-    else:
-        text = Text()
-        if todo.pinned:
-            text.append("★ ", style="yellow bold")
-        text.append(todo.text)
-        text.append(f" #{todo.id}", style="dim")
-        if desc_count:
-            done, total = desc_count
-            text.append(f" [{done}/{total}]", style="dim")
-        if todo.desc:
-            text.append(" \u2139", style="dim")
-        if bot_running and todo.id in bot_running:
-            text.append(" 💭")
-        elif todo.desc and BOT_DIVIDER in todo.desc:
-            text.append(" 🤖")
-        if time:
-            text.append(f"  {time}", style="dim italic")
+    time_str = format_time(todo.done_at if todo.done else todo.created)
+    text = Text(style="dim" if todo.done else "")
+    if todo.pinned:
+        text.append("★ ", style="yellow bold")
+    text.append(todo.text, style="strike" if todo.done else "")
+    text.append(f" #{todo.id}", style="dim")
+    if desc_count:
+        done, total = desc_count
+        text.append(f" [{done}/{total}]", style="dim italic")
+    if todo.desc:
+        text.append(" \u2139", style="dim")
+    if bot_running and todo.id in bot_running:
+        text.append(" 💭")
+    elif todo.desc and BOT_DIVIDER in todo.desc:
+        text.append(" 🤖")
+    if time_str:
+        style = "green italic" if todo.done else "dim italic"
+        text.append(f"  {time_str}", style=style)
     return text
 
 
@@ -180,7 +173,8 @@ class InfoScreen(ModalScreen[str | None]):
         self.body_text = body
 
     def compose(self) -> ComposeResult:
-        yield Label(f"{self.title_text}\n\n{self.body_text}")
+        yield Label(self.title_text)
+        yield Markdown(self.body_text)
 
     def action_close(self) -> None:
         self.dismiss(None)
@@ -418,9 +412,9 @@ class TodoApp(App):
         Binding("j", "cursor_down", "Down", show=False, priority=True),
         Binding("g", "press_g", show=False, priority=True),
         Binding("G", "goto_bottom", "Bottom", show=False, priority=True),
-        Binding("a", "add_sibling", "Add"),
-        Binding("A", "add_root", "Add Root"),
-        Binding("tab", "add_child", "Sub-task", priority=True),
+        Binding("o", "add_sibling", "Add"),
+        Binding("a", "add_root", "Add Root"),
+        Binding("O", "add_child", "Sub-task", priority=True),
         Binding("d", "delete_todo", "Delete"),
         Binding("e", "edit_todo", "Edit"),
         Binding("i", "show_info", "Info"),
@@ -488,7 +482,7 @@ class TodoApp(App):
         yield PomodoroBar()
         yield TodoTree("TODO")
         with ScrollableContainer(id="desc-preview"):
-            yield Static(id="desc-content")
+            yield Markdown(id="desc-content")
         yield Static("", id="status-bar")
         yield Footer()
 
@@ -623,16 +617,7 @@ class TodoApp(App):
                 node_map[todo.id] = node
                 add_nodes(node, todo.id)
 
-        roots = children_map.get(None, [])
-        for todo in roots:
-            has_children = todo.id in children_map
-            label = _render_label(todo, is_leaf=not has_children, desc_count=desc_counts.get(todo.id), bot_running=self._bot_running)
-            if has_children:
-                node = tree.root.add(label, data=todo.id, expand=(todo.id in expanded_ids))
-            else:
-                node = tree.root.add_leaf(label, data=todo.id)
-            node_map[todo.id] = node
-            add_nodes(node, todo.id)
+        add_nodes(tree.root, None)
 
         # restore cursor
         if select_id and select_id in node_map:
@@ -701,12 +686,12 @@ class TodoApp(App):
         if not todo or not todo.desc:
             self._hide_desc_preview()
             return
-        preview = self.query_one("#desc-content", Static)
-        preview.update(todo.desc)
+        preview = self.query_one("#desc-content", Markdown)
+        await preview.update(todo.desc)
         self.query_one("#desc-preview").styles.display = "block"
 
     def _hide_desc_preview(self) -> None:
-        preview = self.query_one("#desc-content", Static)
+        preview = self.query_one("#desc-content", Markdown)
         preview.update("")
         self.query_one("#desc-preview").styles.display = "none"
 
@@ -1067,51 +1052,33 @@ class TodoApp(App):
         bar = self.query_one(PomodoroBar)
         bar.refresh_display(self._pomodoro)
         if transition is not None:
-            if self.client.pomodoro:
-                try:
-                    await self.client.pomodoro.record_session(
-                        started_at=transition.started_at,
-                        finished_at=transition.finished_at,
-                        phase=transition.finished_phase.value,
-                        duration_seconds=transition.duration_seconds,
-                        completed=transition.completed,
-                    )
-                except WsClientError:
-                    pass
+            await self._record_pomodoro_session(transition)
             self._send_pomodoro_notification(transition)
             self.run_worker(self._pomodoro_complete(transition))
 
+    async def _record_pomodoro_session(self, transition: PhaseTransition) -> None:
+        try:
+            await self.client.pomodoro.record_session(
+                started_at=transition.started_at,
+                finished_at=transition.finished_at,
+                phase=transition.finished_phase.value,
+                duration_seconds=transition.duration_seconds,
+                completed=transition.completed,
+            )
+        except WsClientError:
+            pass
+
     async def _pomodoro_complete(self, transition: PhaseTransition) -> None:
-        title = {
-            Phase.FOCUS: "Focus session complete!",
-            Phase.BREAK: "Break is over!",
-            Phase.LONG_BREAK: "Long break is over!",
-        }
-        body = {
-            Phase.FOCUS: "Time to focus",
-            Phase.BREAK: "Take a short break",
-            Phase.LONG_BREAK: "Take a long break",
-        }
         await self.push_screen_wait(InfoScreen(
-            title.get(transition.finished_phase, "Pomodoro"),
-            body.get(transition.next_phase, ""),
+            _PHASE_COMPLETE_TITLES.get(transition.finished_phase, "Pomodoro"),
+            _PHASE_NEXT_LABELS.get(transition.next_phase, ""),
         ))
         bar = self.query_one(PomodoroBar)
         bar.flash()
 
     def _send_pomodoro_notification(self, transition: PhaseTransition) -> None:
-        phase_labels = {
-            Phase.FOCUS: "Focus session complete!",
-            Phase.BREAK: "Break is over!",
-            Phase.LONG_BREAK: "Long break is over!",
-        }
-        next_labels = {
-            Phase.FOCUS: "Time to focus",
-            Phase.BREAK: "Take a short break",
-            Phase.LONG_BREAK: "Take a long break",
-        }
-        title = phase_labels.get(transition.finished_phase, "Pomodoro")
-        body = next_labels.get(transition.next_phase, "")
+        title = _PHASE_COMPLETE_TITLES.get(transition.finished_phase, "Pomodoro")
+        body = _PHASE_NEXT_LABELS.get(transition.next_phase, "")
         try:
             if platform.system() == "Darwin":
                 subprocess.run(
@@ -1144,16 +1111,7 @@ class TodoApp(App):
         elif action == "skip":
             transition = self._pomodoro.skip()
             if transition:
-                try:
-                    await self.client.pomodoro.record_session(
-                        started_at=transition.started_at,
-                        finished_at=transition.finished_at,
-                        phase=transition.finished_phase.value,
-                        duration_seconds=transition.duration_seconds,
-                        completed=transition.completed,
-                    )
-                except WsClientError:
-                    pass
+                await self._record_pomodoro_session(transition)
                 self._send_pomodoro_notification(transition)
         elif action == "reset":
             self._pomodoro.reset()
