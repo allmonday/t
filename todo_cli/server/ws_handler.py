@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from importlib.metadata import version as pkg_version
 from typing import Any, Callable
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -30,6 +31,13 @@ def _handler(msg_type: str):
         _HANDLERS[msg_type] = fn
         return fn
     return decorator
+
+
+# ── server handlers ──
+
+@_handler("server.info")
+async def _server_info(store, data: dict) -> dict:
+    return {"version": pkg_version("todoium")}
 
 
 # ── todo handlers ──

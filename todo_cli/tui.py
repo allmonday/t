@@ -497,8 +497,23 @@ class TodoApp(App):
         if isinstance(self.client, RemoteClient):
             await self.client.connect()
             self.client.set_broadcast_handler(self._on_remote_change)
+            self.run_worker(self._check_version())
         await self._refresh_tree(force_expand=self._saved_expanded)
         self.set_interval(1.0, self._pomodoro_tick)
+
+    async def _check_version(self) -> None:
+        from importlib.metadata import version as pkg_version
+        client_ver = pkg_version("todoium")
+        try:
+            info = await self.client.get_server_info()
+            server_ver = info.get("version", "unknown")
+        except Exception:
+            return
+        if server_ver != client_ver:
+            self.notify(
+                f"Version mismatch: client {client_ver}, server {server_ver}",
+                severity="warning",
+            )
 
     def _update_header(self) -> None:
         self.title = "TODO"

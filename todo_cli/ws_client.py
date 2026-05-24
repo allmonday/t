@@ -193,6 +193,9 @@ class RemoteClient:
 
     # ── queries ──
 
+    async def get_server_info(self) -> dict:
+        return await self._ws.request("server.info")
+
     async def list_active(self) -> list[TodoEntity]:
         data = await self._ws.request("todo.list_active")
         return [TodoEntity(**item) for item in data["items"]]
