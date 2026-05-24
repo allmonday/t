@@ -11,6 +11,7 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
+from textual.containers import ScrollableContainer
 from textual.widgets import Footer, Header, Input, Label, Static, Tree
 from textual.widgets.tree import TreeNode
 
@@ -66,8 +67,8 @@ def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int,
         text = Text(style="dim")
         if todo.pinned:
             text.append("★ ", style="yellow bold")
-        text.append(f"#{todo.id} ")
         text.append(todo.text, style="strike")
+        text.append(f" #{todo.id}", style="dim")
         if desc_count:
             done, total = desc_count
             text.append(f" [{done}/{total}]", style="dim italic")
@@ -85,8 +86,8 @@ def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int,
         text = Text()
         if todo.pinned:
             text.append("★ ", style="yellow bold")
-        text.append(f"#{todo.id} ", style="dim")
         text.append(todo.text)
+        text.append(f" #{todo.id}", style="dim")
         if desc_count:
             done, total = desc_count
             text.append(f" [{done}/{total}]", style="dim")
@@ -360,6 +361,12 @@ class TodoApp(App):
         background: transparent;
         text-style: none;
     }
+    #desc-preview {
+        display: none;
+        height: 30%;
+        border-top: solid $primary;
+        padding: 0 2;
+    }
     #status-bar {
         dock: bottom;
         height: 1;
@@ -478,6 +485,8 @@ class TodoApp(App):
         yield Header()
         yield PomodoroBar()
         yield TodoTree("TODO")
+        with ScrollableContainer(id="desc-preview"):
+            yield Static(id="desc-content")
         yield Static("", id="status-bar")
         yield Footer()
 
@@ -610,6 +619,7 @@ class TodoApp(App):
                 def _restore_cursor(n=node):
                     tree.select_node(n)
                     tree.scroll_to_node(n)
+                    self.run_worker(self._update_desc_preview(n.data))
 
                 self.call_after_refresh(_restore_cursor)
 
@@ -646,6 +656,29 @@ class TodoApp(App):
         if node and node.data is not None:
             return node.data
         return None
+
+    # ── desc preview ──
+
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        node = event.node
+        if node.data is None:
+            self._hide_desc_preview()
+            return
+        self.run_worker(self._update_desc_preview(node.data))
+
+    async def _update_desc_preview(self, todo_id: int) -> None:
+        todo = await self.client.get(todo_id)
+        if not todo or not todo.desc:
+            self._hide_desc_preview()
+            return
+        preview = self.query_one("#desc-content", Static)
+        preview.update(todo.desc)
+        self.query_one("#desc-preview").styles.display = "block"
+
+    def _hide_desc_preview(self) -> None:
+        preview = self.query_one("#desc-content", Static)
+        preview.update("")
+        self.query_one("#desc-preview").styles.display = "none"
 
     # ── actions ──
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.3
+
+- 修复 desc 展开面板鼠标滚轮滚动无效的问题（Static 替换为 ScrollableContainer）
+- desc 面板高度从 60% 调整为 30%
+
 ## 0.4.1
 
 - 修复连续按 e/A 等快捷键导致多层对话框叠加的问题
