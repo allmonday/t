@@ -463,6 +463,8 @@ class TodoApp(App):
         "dracula",
         "textual-dark",
         "nord",
+        "catppuccin-latte",
+        "solarized-light",
     ]
 
     def __init__(self, client: DirectClient | RemoteClient, pomo_durations: dict[Phase, int] | None = None) -> None:
@@ -490,6 +492,8 @@ class TodoApp(App):
         yield Static("", id="status-bar")
         yield Footer()
 
+    _POMODORO_INTERVAL = 1.0
+
     async def on_mount(self) -> None:
         self.theme = self._saved_theme
         self._update_header()
@@ -499,7 +503,18 @@ class TodoApp(App):
             self.client.set_broadcast_handler(self._on_remote_change)
             self.run_worker(self._check_version())
         await self._refresh_tree(force_expand=self._saved_expanded)
-        self.set_interval(1.0, self._pomodoro_tick)
+        self._pomo_timer = self.set_interval(self._POMODORO_INTERVAL, self._pomodoro_tick)
+
+    def on_suspend(self) -> None:
+        """Stop periodic callbacks when app is backgrounded (e.g. Ctrl+Z)."""
+        if hasattr(self, "_pomo_timer") and self._pomo_timer is not None:
+            self._pomo_timer.stop()
+            self._pomo_timer = None
+
+    def on_resume(self) -> None:
+        """Restore periodic callbacks when app returns to foreground."""
+        if not hasattr(self, "_pomo_timer") or self._pomo_timer is None:
+            self._pomo_timer = self.set_interval(self._POMODORO_INTERVAL, self._pomodoro_tick)
 
     async def _check_version(self) -> None:
         from importlib.metadata import version as pkg_version

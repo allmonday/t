@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.0
+
+- 新增两个 light 主题：catppuccin-latte、solarized-light
+
 ## 0.5.0
 
 - 新增 remote 模式版本检查：client 连接 server 后自动对比版本，不一致时弹出 warning 提示具体版本号
