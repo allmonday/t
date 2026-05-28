@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from .models import AuditORM, PomodoroSessionEntity, PomodoroSessionORM, TodoEntity, TodoORM
@@ -175,7 +175,7 @@ class TodoStore:
             if not row or row.deleted_at is not None:
                 return 0
             now = datetime.now().isoformat()
-            # 内联递归 CTE，避免跨 session
+            # 递归 CTE 获取所有子孙节点
             result = await session.execute(
                 text("""
                     WITH RECURSIVE descendants(id) AS (
@@ -191,15 +191,10 @@ class TodoStore:
             )
             desc_ids = [r.id for r in result.fetchall()]
             ids = [todo_id] + desc_ids
-            placeholders = ",".join(f":id_{i}" for i in range(len(ids)))
-            params = {f"id_{i}": v for i, v in enumerate(ids)}
-            params["now"] = now
             await session.execute(
-                text(
-                    f"UPDATE todos SET deleted_at = :now "
-                    f"WHERE id IN ({placeholders}) AND deleted_at IS NULL"
-                ),
-                params,
+                update(TodoORM)
+                .where(TodoORM.id.in_(ids), TodoORM.deleted_at.is_(None))
+                .values(deleted_at=now)
             )
             await self._log_audit(session, "delete", todo_id, {
                 "text": row.text,

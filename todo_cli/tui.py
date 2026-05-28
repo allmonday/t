@@ -591,13 +591,17 @@ class TodoApp(App):
         if force_expand:
             expanded_ids |= force_expand
 
-        # 先查数据，再清空树，避免 clear 和重建之间有 await 导致闪烁
+        # 先查数据，查询失败则保留当前树不变
         filter_done = self._filter_values[self._filter_mode]
-        todos = await self.client.list_active()
+        try:
+            todos = await self.client.list_active()
+        except Exception:
+            return
         todos = filter_todos(todos, filter_done=filter_done, hide_stale=self._hide_stale)
         children_map = build_children_map(todos)
         desc_counts = count_descendants(children_map)
 
+        # 查询成功后再清空重建
         tree.clear()
         count = len(todos)
         suffix = f" {self._filter_labels[self._filter_mode].lower()}" if self._filter_mode else ""
@@ -969,13 +973,14 @@ class TodoApp(App):
             prompt = f"Todo: {todo.text}"
         self._bot_running.add(todo_id)
         await self._update_labels()
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 "claude", "-p", prompt,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
             if proc.returncode == 0:
                 response = stdout.decode().strip()
                 fresh = await self.client.get(todo_id)
@@ -988,6 +993,10 @@ class TodoApp(App):
                 self.notify(f"Claude error: {err}", severity="error")
         except FileNotFoundError:
             self.notify("claude CLI not found", severity="error")
+        except asyncio.TimeoutError:
+            if proc and proc.returncode is None:
+                proc.kill()
+            self.notify("Claude timed out (300s)", severity="error")
         finally:
             self._bot_running.discard(todo_id)
             await self._update_labels()
