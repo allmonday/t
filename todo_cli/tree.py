@@ -109,14 +109,18 @@ def filter_todos(
             t.id for t in children_map.get(None, [])
             if t.done and t.done_at and t.done_at < cutoff
         }
-        remove_ids: set[int] = set()
-        for rid in stale_root_ids:
-            for node in _collect_subtree(children_map, next(t for t in todos if t.id == rid)):
-                remove_ids.add(node.id)
-        if keep_ids is not None:
-            keep_ids -= remove_ids
-        else:
-            keep_ids = {t.id for t in todos} - remove_ids
+        if stale_root_ids:
+            todo_by_id = {t.id: t for t in todos}
+            remove_ids: set[int] = set()
+            for rid in stale_root_ids:
+                root_todo = todo_by_id.get(rid)
+                if root_todo:
+                    for node in _collect_subtree(children_map, root_todo):
+                        remove_ids.add(node.id)
+            if keep_ids is not None:
+                keep_ids -= remove_ids
+            else:
+                keep_ids = {t.id for t in todos} - remove_ids
 
     if keep_ids is not None:
         return [t for t in todos if t.id in keep_ids]

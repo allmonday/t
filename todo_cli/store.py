@@ -206,31 +206,60 @@ class TodoStore:
     # ── internal ──
 
     async def _bubble_up(self, session: AsyncSession, todo_id: int) -> None:
-        """从当前节点向上冒泡更新祖先 done 状态。"""
-        row = await session.get(TodoORM, todo_id)
-        if not row or row.parent is None:
+        """从当前节点向上冒泡更新祖先 done 状态。
+
+        用一次递归 CTE 查出整条祖先链，再逐层查 children 计算 done 状态，
+        替代原来的 O(depth) 轮 × 3 次查询。
+        """
+        # 1. 查出从当前节点到根的祖先链（不含自身）
+        ancestor_result = await session.execute(
+            text("""
+                WITH RECURSIVE ancestors(id, parent) AS (
+                    SELECT id, parent FROM todos WHERE id = (
+                        SELECT parent FROM todos WHERE id = :tid AND parent IS NOT NULL
+                    )
+                    UNION ALL
+                    SELECT t.id, t.parent FROM todos t
+                    INNER JOIN ancestors a ON t.id = a.parent
+                )
+                SELECT id FROM ancestors ORDER BY id
+            """),
+            {"tid": todo_id},
+        )
+        ancestor_ids = [r.id for r in ancestor_result.fetchall()]
+        if not ancestor_ids:
             return
-        parent = await session.get(TodoORM, row.parent)
-        if not parent:
-            return
-        children = (
+
+        # 2. 一次查出所有祖先的 children
+        all_children = (
             await session.scalars(
                 select(TodoORM).where(
-                    TodoORM.parent == parent.id,
+                    TodoORM.parent.in_(ancestor_ids),
                     TodoORM.deleted_at.is_(None),
                 )
             )
         ).all()
-        all_done = len(children) > 0 and all(bool(c.done) for c in children)
-        if bool(parent.done) != all_done:
+        children_by_parent: dict[int, list[TodoORM]] = {}
+        for c in all_children:
+            children_by_parent.setdefault(c.parent, []).append(c)
+
+        # 3. 从最深祖先向根逐层计算 done 状态
+        # ancestors CTE 返回顺序是从叶子到根方向，reverse 后从根到叶子
+        for aid in reversed(ancestor_ids):
+            siblings = children_by_parent.get(aid, [])
+            if not siblings:
+                continue
+            all_done = all(bool(c.done) for c in siblings)
+            ancestor = await session.get(TodoORM, aid)
+            if not ancestor or bool(ancestor.done) == all_done:
+                continue
             now = datetime.now().isoformat() if all_done else None
-            parent.done = int(all_done)
-            parent.done_at = now
-            await self._log_audit(session, "auto_toggle", parent.id, {
+            ancestor.done = int(all_done)
+            ancestor.done_at = now
+            await self._log_audit(session, "auto_toggle", aid, {
                 "done": all_done,
                 "triggered_by": todo_id,
             })
-            await self._bubble_up(session, parent.id)
 
     async def _log_audit(
         self, session: AsyncSession, action: str, todo_id: int, details: dict
