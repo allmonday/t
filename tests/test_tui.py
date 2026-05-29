@@ -5,7 +5,8 @@ import pytest
 from rich.text import Text
 
 from todo_cli.models import TodoEntity
-from todo_cli.tui import TodoApp, TodoTree, _render_label
+from todo_cli.tui import TodoApp
+from todo_cli.tui.widgets import TodoTree, _render_label
 
 
 @pytest.fixture
@@ -293,7 +294,7 @@ class TestRenderLabel:
         assert "💭" in label.plain
 
     def test_bot_desc_shows_robot(self):
-        from todo_cli.tui import BOT_DIVIDER
+        from todo_cli.tui.widgets import BOT_DIVIDER
         todo = _make_todo(desc=f"some text{BOT_DIVIDER}response")
         label = _render_label(todo)
         assert "🤖" in label.plain

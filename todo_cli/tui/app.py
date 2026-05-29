@@ -15,16 +15,18 @@ from textual.containers import ScrollableContainer
 from textual.widgets import Footer, Header, Input, Label, Markdown, Static, Tree
 from textual.widgets.tree import TreeNode
 
-from .direct_client import DirectClient
-from .models import TodoEntity
-from .ws_client import RemoteClient, ClientError as WsClientError
-from .pomodoro import DEFAULT_DURATIONS, PHASE_LABELS, Phase, PhaseTransition, PomodoroTimer, TimerState
-from .tree import build_children_map, count_descendants, filter_todos, format_time
+from ..direct_client import DirectClient
+from ..models import TodoEntity
+from ..ws_client import RemoteClient, ClientError as WsClientError
+from ..pomodoro import Phase, PhaseTransition, PomodoroTimer, TimerState
+from ..tree import build_children_map, count_descendants, filter_todos
+
+from .screens import ConfirmScreen, InfoScreen, InputScreen, PomodoroMenuScreen
+from .state import _THEMES, collect_expanded, load_ui_state, save_ui_state
+from .widgets import BOT_DIVIDER, PomodoroBar, TodoTree, _render_label
 
 
 # ── constants ──
-
-BOT_DIVIDER = "\n---\n🤖 bot:\n"
 
 _PHASE_COMPLETE_TITLES: dict[Phase, str] = {
     Phase.FOCUS: "Focus session complete!",
@@ -37,292 +39,6 @@ _PHASE_NEXT_LABELS: dict[Phase, str] = {
     Phase.BREAK: "Take a short break",
     Phase.LONG_BREAK: "Take a long break",
 }
-
-# ── helpers ──
-
-
-class TodoTree(Tree[int]):
-    """Tree subclass that aligns leaf nodes with expandable nodes."""
-
-    guide_depth = 4
-    show_root = True
-    can_focus = True
-
-    def render_label(self, node, base_style, style):
-        node_label = node.label.copy()
-        node_label.stylize(style)
-        if node == self.cursor_node:
-            if node_label.spans:
-                s = node_label.spans[0]
-                node_label.stylize("rgb(255,165,0) bold", s.start, s.end)
-            node_label.stylize("underline")
-        text = Text.assemble(node_label)
-        return text
-
-    # 屏蔽鼠标事件，仅支持键盘交互
-    def _on_click(self, event) -> None:
-        event.prevent_default()
-        event.stop()
-
-    def _on_mouse_down(self, event) -> None:
-        event.prevent_default()
-        event.stop()
-
-    def _on_mouse_move(self, event) -> None:
-        event.prevent_default()
-        event.stop()
-
-
-def _render_label(todo: TodoEntity, is_leaf: bool = True, desc_count: tuple[int, int] | None = None, bot_running: set[int] | None = None) -> Text:
-    time_str = format_time(todo.done_at if todo.done else todo.created)
-    text = Text(style="dim" if todo.done else "")
-    if todo.pinned:
-        text.append("★ ", style="yellow bold")
-    text.append(todo.text, style="strike" if todo.done else "")
-    text.append(f" #{todo.id}", style="dim")
-    if desc_count:
-        done, total = desc_count
-        text.append(f" [{done}/{total}]", style="dim italic")
-    if todo.desc:
-        text.append(" \u2139", style="dim")
-    if bot_running and todo.id in bot_running:
-        text.append(" 💭")
-    elif todo.desc and BOT_DIVIDER in todo.desc:
-        text.append(" 🤖")
-    if time_str:
-        style = "green italic" if todo.done else "dim italic"
-        text.append(f"  {time_str}", style=style)
-    return text
-
-
-# ── screens ──
-
-
-class InputScreen(ModalScreen[str]):
-    """底部弹出输入框。"""
-
-    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
-
-    def __init__(self, prompt: str = "New todo", default: str = "") -> None:
-        super().__init__()
-        self.prompt = prompt
-        self.default = default
-
-    def compose(self) -> ComposeResult:
-        yield Input(placeholder=self.prompt, value=self.default)
-
-    def on_mount(self) -> None:
-        inp = self.query_one(Input)
-        inp.focus()
-        if self.default:
-            inp.cursor_position = len(self.default)
-
-    @on(Input.Submitted)
-    def on_submit(self, event: Input.Submitted) -> None:
-        value = event.value.strip()
-        if value:
-            self.dismiss(value)
-        else:
-            self.dismiss("")
-
-    def on_key(self, event) -> None:
-        if event.key == "tab":
-            event.prevent_default()
-            event.stop()
-            self.dismiss("")
-
-    def action_cancel(self) -> None:
-        self.dismiss("")
-
-
-class ConfirmScreen(ModalScreen[bool]):
-    """确认对话框。"""
-
-    BINDINGS = [
-        Binding("y", "yes", "Yes", priority=True),
-        Binding("n", "no", "No", priority=True),
-        Binding("escape", "no", "Cancel", priority=True),
-    ]
-
-    def __init__(self, message: str) -> None:
-        super().__init__()
-        self.message = message
-
-    def compose(self) -> ComposeResult:
-        yield Label(self.message)
-
-    def action_yes(self) -> None:
-        self.dismiss(True)
-
-    def action_no(self) -> None:
-        self.dismiss(False)
-
-
-class InfoScreen(ModalScreen[str | None]):
-    """只读信息弹窗，按任意键关闭。"""
-
-    BINDINGS = [
-        Binding("escape", "close", "Close", priority=True),
-        Binding("i", "close", "Close", priority=True),
-        Binding("b", "dispatch", "Bot", priority=True),
-    ]
-
-    def __init__(self, title: str, body: str) -> None:
-        super().__init__()
-        self.title_text = title
-        self.body_text = body
-
-    def compose(self) -> ComposeResult:
-        yield Label(self.title_text)
-        yield Markdown(self.body_text)
-
-    def action_close(self) -> None:
-        self.dismiss(None)
-
-    def action_dispatch(self) -> None:
-        self.dismiss("dispatch")
-
-
-# ── pomodoro widgets ──
-
-
-class PomodoroBar(Static):
-    """Pomodoro progress bar, docked below Header."""
-
-    DEFAULT_CSS = """
-    PomodoroBar {
-        dock: top;
-        height: 1;
-        padding: 0 1;
-        display: none;
-    }
-    PomodoroBar.pomodoro-focus {
-        background: darkred;
-        color: white;
-        display: block;
-    }
-    PomodoroBar.pomodoro-break {
-        background: darkgreen;
-        color: white;
-        display: block;
-    }
-    PomodoroBar.pomodoro-long-break {
-        background: darkcyan;
-        color: white;
-        display: block;
-    }
-    PomodoroBar.pomodoro-flash {
-        background: $warning;
-        color: black;
-    }
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._flash_count = 0
-
-    def refresh_display(self, timer: PomodoroTimer) -> None:
-        self.remove_class("pomodoro-focus", "pomodoro-break", "pomodoro-long-break")
-        if timer.state == TimerState.IDLE:
-            return
-
-        phase_class = {
-            Phase.FOCUS: "pomodoro-focus",
-            Phase.BREAK: "pomodoro-break",
-            Phase.LONG_BREAK: "pomodoro-long-break",
-        }
-        self.add_class(phase_class[timer.phase])
-
-        label = PHASE_LABELS[timer.phase]
-        mins, secs = divmod(timer.remaining, 60)
-        time_str = f"{mins:02d}:{secs:02d}"
-
-        bar_width = max(20, self.size.width - len(label) - 30)
-        filled = int(bar_width * timer.progress)
-        empty = bar_width - filled
-        bar = "\u25cb" * filled + "\u00b7" * empty
-
-        paused = " PAUSED" if timer.state == TimerState.PAUSED else ""
-
-        text = Text()
-        text.append("\U0001f345 ", style="bold")
-        text.append(f"{label}  ", style="bold")
-        text.append(f"[{bar}]  ")
-        text.append(f"{time_str}  ", style="bold")
-        text.append(f"Round {timer.display_round}", style="italic")
-        if paused:
-            text.append(paused, style="bold yellow")
-
-        self.update(text)
-
-    def flash(self) -> None:
-        """Flash the bar to signal phase completion."""
-        self._flash_count = 6
-        self._do_flash()
-
-    def _do_flash(self) -> None:
-        if self._flash_count <= 0:
-            self.remove_class("pomodoro-flash")
-            return
-        if self._flash_count % 2 == 0:
-            self.add_class("pomodoro-flash")
-        else:
-            self.remove_class("pomodoro-flash")
-        self._flash_count -= 1
-        self.set_timer(0.2, self._do_flash)
-
-
-class PomodoroMenuScreen(ModalScreen[str]):
-    """Pomodoro control menu."""
-
-    BINDINGS = [
-        Binding("escape", "cancel", "Cancel", priority=True),
-        Binding("s", "select_start", "Start", priority=True),
-        Binding("p", "select_pause", "Pause", priority=True),
-        Binding("c", "select_resume", "Continue", priority=True),
-        Binding("n", "select_skip", "Next", priority=True),
-        Binding("x", "select_reset", "Reset", priority=True),
-        Binding("o", "select_history", "History", priority=True),
-    ]
-
-    def __init__(self, timer_state: TimerState) -> None:
-        super().__init__()
-        self.timer_state = timer_state
-
-    def compose(self) -> ComposeResult:
-        if self.timer_state == TimerState.IDLE:
-            msg = "\U0001f345 Pomodoro\n\n  \\[S]tart  \\[O] History\n  \\[Esc] Cancel"
-        elif self.timer_state == TimerState.RUNNING:
-            msg = "\U0001f345 Pomodoro (Running)\n\n  \\[P]ause  \\[N]ext  \\[X] Reset  \\[O] History\n  \\[Esc] Cancel"
-        else:
-            msg = "\U0001f345 Pomodoro (Paused)\n\n  \\[C]ontinue  \\[N]ext  \\[X] Reset  \\[O] History\n  \\[Esc] Cancel"
-        yield Label(msg)
-
-    def action_cancel(self) -> None:
-        self.dismiss("")
-
-    def action_select_start(self) -> None:
-        if self.timer_state == TimerState.IDLE:
-            self.dismiss("start")
-
-    def action_select_pause(self) -> None:
-        if self.timer_state == TimerState.RUNNING:
-            self.dismiss("pause")
-
-    def action_select_resume(self) -> None:
-        if self.timer_state == TimerState.PAUSED:
-            self.dismiss("resume")
-
-    def action_select_skip(self) -> None:
-        if self.timer_state != TimerState.IDLE:
-            self.dismiss("skip")
-
-    def action_select_reset(self) -> None:
-        if self.timer_state != TimerState.IDLE:
-            self.dismiss("reset")
-
-    def action_select_history(self) -> None:
-        self.dismiss("history")
 
 
 # ── main app ──
@@ -435,14 +151,6 @@ class TodoApp(App):
     ]
 
     async def _check_bindings(self, key: str, priority: bool = False) -> bool:
-        """Override: priority bindings also respect modal boundary.
-
-        Textual's default checks ``reversed(_binding_chain)`` for priority
-        bindings which always includes the App — even when a ModalScreen is
-        active.  By using ``_modal_binding_chain`` instead, App-level
-        priority bindings are automatically excluded whenever a modal dialog
-        is open, so dialog bindings always win.
-        """
         for namespace, bindings in reversed(self.screen._modal_binding_chain):
             key_bindings = bindings.key_to_bindings.get(key, ())
             for binding in key_bindings:
@@ -450,16 +158,6 @@ class TodoApp(App):
                     if await self.run_action(binding.action, namespace):
                         return True
         return False
-
-    _UI_STATE_PATH = os.path.expanduser("~/.todo_ui_state.json")
-    _THEMES = [
-        "gruvbox",
-        "dracula",
-        "textual-dark",
-        "nord",
-        "catppuccin-latte",
-        "solarized-light",
-    ]
 
     def __init__(self, client: DirectClient | RemoteClient, pomo_durations: dict[Phase, int] | None = None) -> None:
         super().__init__()
@@ -472,9 +170,9 @@ class TodoApp(App):
         self._h_pending: bool = False
         self._pomodoro = PomodoroTimer(durations=pomo_durations)
         self._bot_running: set[int] = set()
-        ui_state = self._load_ui_state()
+        ui_state = load_ui_state()
         self._saved_expanded: set[int] = ui_state.get("expanded", set())
-        self._saved_theme: str = ui_state.get("theme", self._THEMES[0])
+        self._saved_theme: str = ui_state.get("theme", _THEMES[0])
         self._filter_mode: int = min(ui_state.get("filter_mode", 0), 1)
 
     def compose(self) -> ComposeResult:
@@ -491,7 +189,6 @@ class TodoApp(App):
     async def on_mount(self) -> None:
         self.theme = self._saved_theme
         self._update_header()
-        # Remote mode: connect WebSocket and register broadcast handler
         if isinstance(self.client, RemoteClient):
             await self.client.connect()
             self.client.set_broadcast_handler(self._on_remote_change)
@@ -500,13 +197,11 @@ class TodoApp(App):
         self._pomo_timer = self.set_interval(self._POMODORO_INTERVAL, self._pomodoro_tick)
 
     def on_suspend(self) -> None:
-        """Stop periodic callbacks when app is backgrounded (e.g. Ctrl+Z)."""
         if hasattr(self, "_pomo_timer") and self._pomo_timer is not None:
             self._pomo_timer.stop()
             self._pomo_timer = None
 
     def on_resume(self) -> None:
-        """Restore periodic callbacks when app returns to foreground."""
         if not hasattr(self, "_pomo_timer") or self._pomo_timer is None:
             self._pomo_timer = self.set_interval(self._POMODORO_INTERVAL, self._pomodoro_tick)
 
@@ -532,50 +227,12 @@ class TodoApp(App):
         self.query_one("#status-bar", Static).update(f"Theme: {self.theme}")
 
     def _on_remote_change(self, broadcast: dict) -> None:
-        """Called when another client makes a change. Schedule a refresh."""
         selected = self._get_selected_todo_id()
         self.run_worker(self._refresh_tree(select_id=selected))
 
-    def _load_ui_state(self) -> dict:
-        try:
-            with open(self._UI_STATE_PATH, "r") as f:
-                data = json.load(f)
-            return {
-                "expanded": set(data.get("expanded", [])),
-                "theme": data.get("theme", self._THEMES[0]),
-                "filter_mode": data.get("filter_mode", 0),
-            }
-        except (FileNotFoundError, json.JSONDecodeError, TypeError):
-            return self._migrate_pickle_state()
-
-    def _migrate_pickle_state(self) -> dict:
-        pickle_path = os.path.expanduser("~/.todo_ui_state.pkl")
-        try:
-            import pickle
-            with open(pickle_path, "rb") as f:
-                data = pickle.load(f)
-            result: dict = {"expanded": set(), "theme": self._THEMES[0]}
-            if isinstance(data, set):
-                result["expanded"] = data
-            elif isinstance(data, dict):
-                result["expanded"] = data.get("expanded", set())
-                result["theme"] = data.get("theme", self._THEMES[0])
-            os.remove(pickle_path)
-            return result
-        except (FileNotFoundError, Exception):
-            return {"expanded": set(), "theme": self._THEMES[0]}
-
-    def _save_ui_state(self) -> None:
-        tree = self.query_one(TodoTree)
-        expanded_ids: set[int] = set()
-        for node in tree.root.children:
-            self._collect_expanded(node, expanded_ids)
-        state = {"expanded": sorted(expanded_ids), "theme": self.theme, "filter_mode": self._filter_mode}
-        with open(self._UI_STATE_PATH, "w") as f:
-            json.dump(state, f)
-
     async def action_quit(self) -> None:
-        self._save_ui_state()
+        tree = self.query_one(TodoTree)
+        save_ui_state(tree, self.theme, self._filter_mode)
         await self.client.close()
         self.exit()
 
@@ -584,14 +241,12 @@ class TodoApp(App):
     async def _refresh_tree(self, select_id: int | None = None, force_expand: set[int] | None = None) -> None:
         tree = self.query_one(TodoTree)
 
-        # 保存当前展开状态
         expanded_ids: set[int] = set()
         for node in tree.root.children:
-            self._collect_expanded(node, expanded_ids)
+            collect_expanded(node, expanded_ids)
         if force_expand:
             expanded_ids |= force_expand
 
-        # 先查数据，查询失败则保留当前树不变
         filter_done = self._filter_values[self._filter_mode]
         try:
             todos = await self.client.list_active()
@@ -601,7 +256,6 @@ class TodoApp(App):
         children_map = build_children_map(todos)
         desc_counts = count_descendants(children_map)
 
-        # 查询成功后再清空重建
         tree.clear()
         count = len(todos)
         suffix = f" {self._filter_labels[self._filter_mode].lower()}" if self._filter_mode else ""
@@ -623,10 +277,8 @@ class TodoApp(App):
 
         add_nodes(tree.root, None)
 
-        # restore cursor
         if select_id and select_id in node_map:
             node = node_map[select_id]
-            # 检查所有祖先是否已展开，避免意外展开
             visible = True
             parent = node.parent
             while parent is not None and parent != tree.root:
@@ -642,15 +294,7 @@ class TodoApp(App):
 
                 self.call_after_refresh(_restore_cursor)
 
-    @staticmethod
-    def _collect_expanded(node: TreeNode[int], expanded_ids: set[int]) -> None:
-        if node.data is not None and node.is_expanded:
-            expanded_ids.add(node.data)
-        for child in node.children:
-            TodoApp._collect_expanded(child, expanded_ids)
-
     async def _update_labels(self) -> None:
-        """就地更新所有节点标签，不重建树，光标位置不变。仅用于 edit 场景。"""
         tree = self.query_one(TodoTree)
         todo_list = await self.client.list_active()
         todos = {t.id: t for t in todo_list}
@@ -750,7 +394,6 @@ class TodoApp(App):
         if target is None:
             self.notify(f"#{todo_id} not found", severity="warning")
             return
-        # 检查所有祖先是否已展开，未展开则不跳转
         parent = target.parent
         while parent is not None and parent != tree.root:
             if not parent.is_expanded:
@@ -761,7 +404,6 @@ class TodoApp(App):
         tree.scroll_to_node(target)
 
     def _modal_active(self) -> bool:
-        """Check if any ModalScreen is currently active."""
         from textual.screen import ModalScreen
         return any(isinstance(s, ModalScreen) for s in self.screen_stack)
 
@@ -1033,7 +675,8 @@ class TodoApp(App):
     async def action_cycle_filter(self) -> None:
         self._filter_mode = (self._filter_mode + 1) % 2
         self._update_header()
-        self._save_ui_state()
+        tree = self.query_one(TodoTree)
+        save_ui_state(tree, self.theme, self._filter_mode)
         await self._refresh_tree()
 
     async def action_refresh(self) -> None:
@@ -1041,12 +684,13 @@ class TodoApp(App):
 
     def action_toggle_theme(self) -> None:
         try:
-            idx = self._THEMES.index(self.theme)
+            idx = _THEMES.index(self.theme)
         except ValueError:
             idx = -1
-        self.theme = self._THEMES[(idx + 1) % len(self._THEMES)]
+        self.theme = _THEMES[(idx + 1) % len(_THEMES)]
         self._update_header()
-        self._save_ui_state()
+        tree = self.query_one(TodoTree)
+        save_ui_state(tree, self.theme, self._filter_mode)
         self.notify(f"Theme: {self.theme}")
 
     async def action_toggle_stale(self) -> None:
@@ -1145,9 +789,9 @@ class TodoApp(App):
         lines = [f"Today: {focus_done} focus completed, {focus_skipped} skipped, {total_focus_min} min total", ""]
         for s in sessions:
             phase_label = {"focus": "FOCUS", "break": "BREAK", "long_break": "LONG BREAK"}.get(s.phase, s.phase)
-            t = s.started_at[11:16]  # HH:MM
+            t = s.started_at[11:16]
             mins = s.duration_seconds // 60
-            status = "\u2713" if s.completed else "skip"
+            status = "✓" if s.completed else "skip"
             lines.append(f"  {t}  {phase_label:<12} {mins}min  {status}")
         body = "\n".join(lines)
         await self.push_screen_wait(InfoScreen("\U0001f345 Pomodoro History", body))
@@ -1164,16 +808,13 @@ def run_tui(
     db_path: str | None = None,
     pomo_durations: dict[Phase, int] | None = None,
 ) -> None:
-    """TUI entry point. Textual manages the event loop."""
     if remote_url:
-        # Remote mode: connect via WebSocket
         ws_url = remote_url.replace("http://", "ws://").replace("https://", "wss://")
         if not ws_url.endswith("/ws"):
             ws_url = ws_url.rstrip("/") + "/ws"
         client: DirectClient | RemoteClient = RemoteClient(ws_url, api_token=remote_token)
     else:
-        # Local mode: direct store access, no server
-        from .db import create_engine_and_session, init_db, seed_if_empty
+        from ..db import create_engine_and_session, init_db, seed_if_empty
 
         async def _init_db():
             engine, session_factory = create_engine_and_session(db_path)
