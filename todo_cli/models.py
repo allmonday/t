@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import Column, ForeignKey, Index, Integer, Text
+from sqlalchemy import Boolean, Column, ForeignKey, Index, Integer, Text
 from sqlalchemy.orm import DeclarativeBase
 
 # ── Layer 1: SQLAlchemy ORM Models ──
@@ -20,9 +20,9 @@ class TodoORM(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     text = Column(Text, nullable=False)
     desc = Column(Text, nullable=True)
-    done = Column(Integer, nullable=False, default=0)
+    done = Column(Boolean, nullable=False, default=False)
     parent = Column(Integer, ForeignKey("todos.id"), nullable=True)
-    pinned = Column(Integer, nullable=False, default=0)
+    pinned = Column(Boolean, nullable=False, default=False)
     created = Column(Text, nullable=False)
     done_at = Column(Text, nullable=True)
     deleted_at = Column(Text, nullable=True)
@@ -72,7 +72,7 @@ class PomodoroSessionORM(Base):
     finished_at = Column(Text, nullable=False)
     phase = Column(Text, nullable=False)  # "focus" | "break" | "long_break"
     duration_seconds = Column(Integer, nullable=False)
-    completed = Column(Integer, nullable=False, default=1)
+    completed = Column(Boolean, nullable=False, default=True)
 
     __table_args__ = (
         Index("idx_pomodoro_started", "started_at"),

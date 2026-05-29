@@ -11,7 +11,6 @@ from fastapi import FastAPI, Query, WebSocket
 
 from todo_cli.db import create_engine_and_session
 from todo_cli.models import Base
-from todo_cli.server.auth import set_api_token
 from todo_cli.server.connection_manager import ConnectionManager
 from todo_cli.server.ws_handler import websocket_endpoint
 from todo_cli.ws_client import RemoteClient, ClientError
@@ -39,11 +38,11 @@ def _make_test_app():
     """Create FastAPI app for testing (no lifespan, no alembic)."""
     engine, session_factory = create_engine_and_session(":memory:")
     token = secrets.token_urlsafe(32)
-    set_api_token(token)
 
     app = FastAPI()
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.api_token = token
 
     manager = ConnectionManager()
     app.state.connection_manager = manager

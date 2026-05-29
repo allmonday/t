@@ -29,6 +29,7 @@ def create_engine_and_session(db_path: str | None = None):
 
 async def init_db(engine) -> None:
     """PRAGMA 设置 + 通过 alembic migration 建表/迁移。"""
+    from alembic import command
     from alembic.config import Config as AlembicConfig
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
@@ -40,8 +41,8 @@ async def init_db(engine) -> None:
     cfg.set_main_option("script_location", alembic_dir)
     script = ScriptDirectory.from_config(cfg)
 
-    def _stamp_legacy_db(connection):
-        """旧数据库（create_all 创建）没有 alembic_version，需先 stamp。"""
+    def _check_legacy_db(connection):
+        """检查是否为旧数据库（create_all 创建，无 alembic_version）。"""
         result = connection.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name='alembic_version'")
         )
@@ -49,13 +50,8 @@ async def init_db(engine) -> None:
             result = connection.execute(
                 text("SELECT name FROM sqlite_master WHERE type='table' AND name='todos'")
             )
-            if result.fetchone() is not None:
-                init_rev = script.get_bases()[0]
-                stamp_ctx = MigrationContext.configure(connection)
-                stamp_ctx._ensure_version_table()
-                connection.execute(
-                    stamp_ctx._version.insert().values(version_num=init_rev)
-                )
+            return result.fetchone() is not None
+        return False
 
     def _run_migrations(connection):
         from alembic.operations import Operations
@@ -79,7 +75,16 @@ async def init_db(engine) -> None:
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.execute(text("PRAGMA foreign_keys=ON"))
         await conn.execute(text("PRAGMA busy_timeout=5000"))
-        await conn.run_sync(_stamp_legacy_db)
+        needs_stamp = await conn.run_sync(_check_legacy_db)
+
+    if needs_stamp:
+        sync_url = str(engine.url).replace("+aiosqlite", "")
+        cfg.set_main_option("sqlalchemy.url", sync_url)
+        command.stamp(cfg, script.get_bases()[0])
+
+    async with engine.begin() as conn:
+        await conn.execute(text("PRAGMA foreign_keys=ON"))
+        await conn.execute(text("PRAGMA busy_timeout=5000"))
         await conn.run_sync(_run_migrations)
 
 
@@ -101,7 +106,7 @@ async def seed_if_empty(session_factory: async_sessionmaker) -> None:
         ]
         root_ids: list[int] = []
         for text, done in seeds_root:
-            orm = TodoORM(text=text, done=int(done), parent=None, created=now)
+            orm = TodoORM(text=text, done=done, parent=None, created=now)
             session.add(orm)
             await session.flush()
             root_ids.append(orm.id)
@@ -116,7 +121,7 @@ async def seed_if_empty(session_factory: async_sessionmaker) -> None:
         for text, done, parent_id in seed_children:
             orm = TodoORM(
                 text=text,
-                done=int(done),
+                done=done,
                 parent=parent_id,
                 created=now,
                 done_at=now if done else None,

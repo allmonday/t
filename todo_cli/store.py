@@ -32,7 +32,7 @@ class TodoStore:
                 TodoORM.deleted_at.is_(None),
             )
             if filter_done is not None:
-                stmt = stmt.where(TodoORM.done == int(filter_done))
+                stmt = stmt.where(TodoORM.done == filter_done)
             stmt = stmt.order_by(TodoORM.pinned.desc(), TodoORM.id)
             rows = (await session.scalars(stmt)).all()
             return [TodoEntity.model_validate(r) for r in rows]
@@ -72,19 +72,7 @@ class TodoStore:
                 """),
                 {"pid": todo_id},
             )
-            return [
-                TodoEntity(
-                    id=r.id,
-                    text=r.text,
-                    desc=r.desc,
-                    done=bool(r.done),
-                    parent=r.parent,
-                    created=r.created,
-                    done_at=r.done_at,
-                    deleted_at=r.deleted_at,
-                )
-                for r in result.fetchall()
-            ]
+            return [TodoEntity.model_validate(r) for r in result.fetchall()]
 
     async def has_children(self, todo_id: int) -> bool:
         async with self.session_factory() as session:
@@ -105,7 +93,7 @@ class TodoStore:
                 if not parent or parent.deleted_at is not None:
                     raise ValueError(f"Parent todo #{parent_id} not found")
             now = datetime.now().isoformat()
-            orm = TodoORM(text=text, desc=desc, done=0, parent=parent_id, created=now)
+            orm = TodoORM(text=text, desc=desc, done=False, parent=parent_id, created=now)
             session.add(orm)
             await session.flush()
             await self._log_audit(session, "add", orm.id, {"text": text, "parent": parent_id})
@@ -147,9 +135,9 @@ class TodoStore:
             )
             if child_count and child_count > 0:
                 return False
-            new_done = not bool(row.done)
+            new_done = not row.done
             now = datetime.now().isoformat() if new_done else None
-            row.done = int(new_done)
+            row.done = new_done
             row.done_at = now
             await self._log_audit(session, "toggle", todo_id, {"done": new_done})
             await session.flush()
@@ -164,8 +152,8 @@ class TodoStore:
                 return False
             if row.parent is not None:
                 raise ValueError("Only root todos can be pinned")
-            row.pinned = int(not bool(row.pinned))
-            await self._log_audit(session, "toggle_pin", todo_id, {"pinned": bool(row.pinned)})
+            row.pinned = not row.pinned
+            await self._log_audit(session, "toggle_pin", todo_id, {"pinned": row.pinned})
             await session.commit()
             return True
 
@@ -249,12 +237,12 @@ class TodoStore:
             siblings = children_by_parent.get(aid, [])
             if not siblings:
                 continue
-            all_done = all(bool(c.done) for c in siblings)
+            all_done = all(c.done for c in siblings)
             ancestor = await session.get(TodoORM, aid)
-            if not ancestor or bool(ancestor.done) == all_done:
+            if not ancestor or ancestor.done == all_done:
                 continue
             now = datetime.now().isoformat() if all_done else None
-            ancestor.done = int(all_done)
+            ancestor.done = all_done
             ancestor.done_at = now
             await self._log_audit(session, "auto_toggle", aid, {
                 "done": all_done,
@@ -310,7 +298,7 @@ class PomodoroStore:
                 finished_at=finished_at,
                 phase=phase,
                 duration_seconds=duration_seconds,
-                completed=int(completed),
+                completed=completed,
             )
             session.add(orm)
             await session.commit()

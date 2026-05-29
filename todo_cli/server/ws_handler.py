@@ -10,7 +10,7 @@ from typing import Any, Callable
 from fastapi import WebSocket, WebSocketDisconnect
 
 from ..store import PomodoroStore, TodoStore
-from .auth import get_api_token
+from .auth import get_api_token as _get_token
 from .connection_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
@@ -172,7 +172,7 @@ async def websocket_endpoint(
 ) -> None:
     """Handle a single WebSocket connection."""
     # auth
-    expected = get_api_token()
+    expected = _get_token(websocket)
     if expected is not None and token != expected:
         await websocket.close(code=4001, reason="Invalid token")
         return
