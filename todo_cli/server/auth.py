@@ -1,13 +1,9 @@
 """Simple Bearer token authentication."""
 from __future__ import annotations
 
-_API_TOKEN: str | None = None
+from fastapi import Request, WebSocket
 
 
-def set_api_token(token: str | None) -> None:
-    global _API_TOKEN
-    _API_TOKEN = token
-
-
-def get_api_token() -> str | None:
-    return _API_TOKEN
+def get_api_token(request_or_ws: Request | WebSocket) -> str | None:
+    """Get the API token from app state."""
+    return getattr(request_or_ws.app.state, "api_token", None)

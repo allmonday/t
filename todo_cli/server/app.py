@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, WebSocket
 
 from ..db import create_engine_and_session, init_db, seed_if_empty
-from .auth import set_api_token
 from .connection_manager import ConnectionManager
 from .ws_handler import websocket_endpoint
 
@@ -37,11 +36,11 @@ def create_app(
     engine, session_factory = create_engine_and_session(db_path)
 
     token = api_token if api_token else secrets.token_urlsafe(32)
-    set_api_token(token)
 
     app = FastAPI(lifespan=lifespan)
     app.state.engine = engine
     app.state.session_factory = session_factory
+    app.state.api_token = token
 
     manager = ConnectionManager()
     app.state.connection_manager = manager
