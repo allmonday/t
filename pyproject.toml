@@ -7,13 +7,16 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.18.4",
     "fastapi>=0.136.1",
+    "nexusx>=2.0.0",
     "pydantic-resolve>=5.3.1",
     "rich",
     "sqlalchemy[aiosqlite]>=2.0.49",
+    "sqlmodel",
     "textual",
     "uvicorn[standard]>=0.46.0",
     "websockets>=12.0",
     "python-socks[asyncio]",
+    "fastmcp>=3.3.1",
 ]
 
 [project.scripts]
@@ -24,7 +27,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["todo_cli"]
+packages = ["todo_cli", "src"]
 artifacts = ["todo_cli/alembic/**/*"]
 
 [dependency-groups]
